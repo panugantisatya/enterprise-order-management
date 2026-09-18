@@ -68,6 +68,11 @@ public class OutboxEvent {
         this.status = OutboxEventStatus.PENDING;
     }
 
+    public void markPublished() {
+        this.status = OutboxEventStatus.PUBLISHED;
+        this.publishedAt = Instant.now();
+    }
+
     @PrePersist
     protected void onCreate() {
         if (createdAt == null) {
