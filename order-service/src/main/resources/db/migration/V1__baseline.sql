@@ -1,0 +1,2 @@
+-- Baseline migration for the existing development schema.
+-- Existing tables were created by Hibernate before Flyway was introduced.
