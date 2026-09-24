@@ -21,6 +21,7 @@ public class OutboxEvent {
 
     public enum OutboxEventStatus {
         PENDING,
+        PROCESSING,
         PUBLISHED,
         FAILED
     }
@@ -53,6 +54,9 @@ public class OutboxEvent {
     @Column(nullable = false, length = 20)
     private OutboxEventStatus status;
 
+    @Column(name = "next_attempt_at")
+    private Instant nextAttemptAt;
+
     public OutboxEvent(
             String aggregateType,
             UUID aggregateId,
@@ -66,15 +70,37 @@ public class OutboxEvent {
         this.payload = payload;
         this.retryCount = 0;
         this.status = OutboxEventStatus.PENDING;
+        this.nextAttemptAt = Instant.now();
+    }
+
+    public void markProcessing() {
+        this.status = OutboxEventStatus.PROCESSING;
     }
 
     public void markPublished() {
         this.status = OutboxEventStatus.PUBLISHED;
         this.publishedAt = Instant.now();
+        this.nextAttemptAt = null;
+    }
+
+    public void markRetry(Instant nextAttemptAt) {
+        this.retryCount = this.retryCount + 1;
+        this.status = OutboxEventStatus.PENDING;
+        this.nextAttemptAt = nextAttemptAt;
+    }
+
+    public void markFailed() {
+        this.retryCount = this.retryCount + 1;
+        this.status = OutboxEventStatus.FAILED;
+        this.nextAttemptAt = null;
     }
 
     @PrePersist
     protected void onCreate() {
+        if (id == null) {
+            id = UUID.randomUUID();
+        }
+
         if (createdAt == null) {
             createdAt = Instant.now();
         }
@@ -85,6 +111,10 @@ public class OutboxEvent {
 
         if (status == null) {
             status = OutboxEventStatus.PENDING;
+        }
+
+        if (nextAttemptAt == null) {
+            nextAttemptAt = createdAt;
         }
     }
 }
