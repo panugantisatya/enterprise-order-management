@@ -57,6 +57,12 @@ public class OutboxEvent {
     @Column(name = "next_attempt_at")
     private Instant nextAttemptAt;
 
+    @Column(name = "processing_token")
+    private UUID processingToken;
+
+    @Column(name = "processing_started_at")
+    private Instant processingStartedAt;
+
     public OutboxEvent(
             String aggregateType,
             UUID aggregateId,
@@ -73,30 +79,39 @@ public class OutboxEvent {
         this.nextAttemptAt = Instant.now();
     }
 
-    public void markProcessing() {
+    public void markProcessing(UUID token) {
         this.status = OutboxEventStatus.PROCESSING;
+        this.processingToken = token;
+        this.processingStartedAt = Instant.now();
     }
 
     public void markPublished() {
         this.status = OutboxEventStatus.PUBLISHED;
         this.publishedAt = Instant.now();
         this.nextAttemptAt = null;
+        this.processingToken = null;
+        this.processingStartedAt = null;
     }
 
     public void markRetry(Instant nextAttemptAt) {
         this.retryCount = this.retryCount + 1;
         this.status = OutboxEventStatus.PENDING;
         this.nextAttemptAt = nextAttemptAt;
+        this.processingToken = null;
+        this.processingStartedAt = null;
     }
 
     public void markFailed() {
         this.retryCount = this.retryCount + 1;
         this.status = OutboxEventStatus.FAILED;
         this.nextAttemptAt = null;
+        this.processingToken = null;
+        this.processingStartedAt = null;
     }
 
     @PrePersist
     protected void onCreate() {
+
         if (id == null) {
             id = UUID.randomUUID();
         }

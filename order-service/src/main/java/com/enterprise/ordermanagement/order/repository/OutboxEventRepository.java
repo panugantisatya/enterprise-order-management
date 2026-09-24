@@ -30,13 +30,36 @@ public interface OutboxEventRepository
     @Modifying
     @Query("""
             UPDATE OutboxEvent e
-            SET e.status = :processingStatus
+            SET e.status = :processingStatus,
+                e.processingToken = :processingToken,
+                e.processingStartedAt = :processingStartedAt
             WHERE e.id IN :eventIds
               AND e.status = :pendingStatus
             """)
     int claimEvents(
             List<UUID> eventIds,
             OutboxEventStatus pendingStatus,
-            OutboxEventStatus processingStatus
+            OutboxEventStatus processingStatus,
+            UUID processingToken,
+            Instant processingStartedAt
+    );
+
+    List<OutboxEvent> findByProcessingToken(UUID processingToken);
+
+    @Modifying
+    @Query("""
+            UPDATE OutboxEvent e
+            SET e.status = :pendingStatus,
+                e.processingToken = null,
+                e.processingStartedAt = null,
+                e.nextAttemptAt = :nextAttemptAt
+            WHERE e.status = :processingStatus
+              AND e.processingStartedAt < :cutoff
+            """)
+    int recoverStuckEvents(
+            OutboxEventStatus processingStatus,
+            OutboxEventStatus pendingStatus,
+            Instant cutoff,
+            Instant nextAttemptAt
     );
 }
