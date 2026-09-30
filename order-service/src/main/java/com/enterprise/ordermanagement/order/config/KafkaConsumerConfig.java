@@ -8,6 +8,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.listener.CommonErrorHandler;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -23,6 +24,7 @@ public class KafkaConsumerConfig {
 
     @Bean
     public ConsumerFactory<String, String> consumerFactory() {
+
         Map<String, Object> config = new HashMap<>();
 
         config.put(
@@ -56,12 +58,16 @@ public class KafkaConsumerConfig {
     @Bean
     public ConcurrentKafkaListenerContainerFactory<String, String>
     kafkaListenerContainerFactory(
-            ConsumerFactory<String, String> consumerFactory
+            ConsumerFactory<String, String> consumerFactory,
+            CommonErrorHandler kafkaErrorHandler
     ) {
+
         ConcurrentKafkaListenerContainerFactory<String, String> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
 
         factory.setConsumerFactory(consumerFactory);
+
+        factory.setCommonErrorHandler(kafkaErrorHandler);
 
         return factory;
     }

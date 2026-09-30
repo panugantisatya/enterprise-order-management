@@ -1,5 +1,6 @@
 package com.enterprise.ordermanagement.order.consumer;
 
+import com.enterprise.ordermanagement.order.bulk.BulkOrderJobCreatedEvent;
 import com.enterprise.ordermanagement.order.service.BulkOrderJobProcessor;
 import com.enterprise.ordermanagement.order.service.ConsumerIdempotencyService;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -13,8 +14,11 @@ import java.util.UUID;
 @Component
 public class OrderEventConsumer {
 
-    private static final String ORDERS_EVENTS_TOPIC = "orders.events";
-    private static final String CONSUMER_GROUP = "order-service-consumer";
+    private static final String ORDERS_EVENTS_TOPIC =
+            "orders.events";
+
+    private static final String CONSUMER_GROUP =
+            "order-service-consumer";
 
     private final ConsumerIdempotencyService consumerIdempotencyService;
     private final BulkOrderJobProcessor bulkOrderJobProcessor;
@@ -44,11 +48,6 @@ public class OrderEventConsumer {
             String eventType = extractEventType(root);
 
             if (eventType == null || eventType.isBlank()) {
-                System.out.println(
-                        "Ignoring legacy/unknown event without eventType: "
-                                + eventId
-                );
-
                 markProcessed(eventId);
                 return;
             }
@@ -57,26 +56,20 @@ public class OrderEventConsumer {
                     CONSUMER_GROUP,
                     eventId
             )) {
-                System.out.println(
-                        "Skipping already processed event: " + eventId
-                );
                 return;
             }
 
             switch (eventType) {
 
-                case "OrderCreated" -> processOrderCreated(
-                        eventJson,
-                        eventId
-                );
+                case "OrderCreated" ->
+                        processOrderCreated(eventJson, eventId);
 
                 case "BulkOrderJobCreated" ->
                         processBulkOrderJobCreated(root);
 
-                default -> System.out.println(
-                        "Ignoring unsupported event type: "
-                                + eventType
-                );
+                default -> {
+                    // Unsupported events are intentionally ignored.
+                }
             }
 
             markProcessed(eventId);
@@ -94,10 +87,8 @@ public class OrderEventConsumer {
             UUID eventId
     ) {
         System.out.println(
-                "Processing OrderCreated event: " + eventId
+                "Received OrderCreated event: " + eventId
         );
-
-        System.out.println(eventJson);
     }
 
     private void processBulkOrderJobCreated(
@@ -105,25 +96,25 @@ public class OrderEventConsumer {
     ) throws JacksonException {
 
         JsonNode jobIdNode = root.get("jobId");
+        JsonNode ordersNode = root.get("orders");
 
         if (jobIdNode == null || jobIdNode.isNull()) {
             throw new IllegalArgumentException(
-                    "jobId is missing from bulk order event"
+                    "BulkOrderJobCreated event missing jobId"
             );
         }
-
-        JsonNode ordersNode = root.get("orders");
 
         if (ordersNode == null || !ordersNode.isArray()) {
             throw new IllegalArgumentException(
-                    "orders is missing or is not an array"
+                    "BulkOrderJobCreated event missing orders"
             );
         }
 
-        var event = jsonMapper.treeToValue(
-                root,
-                com.enterprise.ordermanagement.order.bulk.BulkOrderJobCreatedEvent.class
-        );
+        BulkOrderJobCreatedEvent event =
+                jsonMapper.treeToValue(
+                        root,
+                        BulkOrderJobCreatedEvent.class
+                );
 
         bulkOrderJobProcessor.process(
                 event.jobId(),
@@ -137,12 +128,12 @@ public class OrderEventConsumer {
 
         if (eventIdNode == null || eventIdNode.isNull()) {
             throw new IllegalArgumentException(
-                    "eventId is missing from order event"
+                    "Event missing eventId"
             );
         }
 
         return UUID.fromString(
-                eventIdNode.asString()
+                eventIdNode.asText()
         );
     }
 
@@ -154,7 +145,7 @@ public class OrderEventConsumer {
             return null;
         }
 
-        return eventTypeNode.asString();
+        return eventTypeNode.asText();
     }
 
     private void markProcessed(UUID eventId) {
