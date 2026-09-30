@@ -1,6 +1,7 @@
 package com.enterprise.ordermanagement.order.consumer;
 
 import com.enterprise.ordermanagement.order.bulk.BulkOrderJobCreatedEvent;
+import com.enterprise.ordermanagement.order.exception.InvalidOrderEventException;
 import com.enterprise.ordermanagement.order.service.BulkOrderJobProcessor;
 import com.enterprise.ordermanagement.order.service.ConsumerIdempotencyService;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -41,15 +42,25 @@ public class OrderEventConsumer {
     )
     public void consume(String eventJson) {
 
-        try {
-            JsonNode root = jsonMapper.readTree(eventJson);
+        final JsonNode root;
 
+        try {
+            root = jsonMapper.readTree(eventJson);
+        } catch (JacksonException ex) {
+            throw new InvalidOrderEventException(
+                    "Invalid order event JSON",
+                    ex
+            );
+        }
+
+        try {
             UUID eventId = extractEventId(root);
             String eventType = extractEventType(root);
 
             if (eventType == null || eventType.isBlank()) {
-                markProcessed(eventId);
-                return;
+                throw new InvalidOrderEventException(
+                        "Event missing eventType"
+                );
             }
 
             if (consumerIdempotencyService.alreadyProcessed(
@@ -68,14 +79,21 @@ public class OrderEventConsumer {
                         processBulkOrderJobCreated(root);
 
                 default -> {
-                    // Unsupported events are intentionally ignored.
+                    // Unsupported event types are intentionally ignored.
                 }
             }
 
             markProcessed(eventId);
 
-        } catch (JacksonException | IllegalArgumentException ex) {
-            throw new IllegalStateException(
+        } catch (InvalidOrderEventException ex) {
+            throw ex;
+        } catch (IllegalArgumentException ex) {
+            throw new InvalidOrderEventException(
+                    "Invalid order event",
+                    ex
+            );
+        } catch (JacksonException ex) {
+            throw new InvalidOrderEventException(
                     "Invalid order event payload",
                     ex
             );
@@ -99,13 +117,13 @@ public class OrderEventConsumer {
         JsonNode ordersNode = root.get("orders");
 
         if (jobIdNode == null || jobIdNode.isNull()) {
-            throw new IllegalArgumentException(
+            throw new InvalidOrderEventException(
                     "BulkOrderJobCreated event missing jobId"
             );
         }
 
         if (ordersNode == null || !ordersNode.isArray()) {
-            throw new IllegalArgumentException(
+            throw new InvalidOrderEventException(
                     "BulkOrderJobCreated event missing orders"
             );
         }
@@ -127,14 +145,21 @@ public class OrderEventConsumer {
         JsonNode eventIdNode = root.get("eventId");
 
         if (eventIdNode == null || eventIdNode.isNull()) {
-            throw new IllegalArgumentException(
+            throw new InvalidOrderEventException(
                     "Event missing eventId"
             );
         }
 
-        return UUID.fromString(
-                eventIdNode.asText()
-        );
+        try {
+            return UUID.fromString(
+                    eventIdNode.asText()
+            );
+        } catch (IllegalArgumentException ex) {
+            throw new InvalidOrderEventException(
+                    "Event contains invalid eventId",
+                    ex
+            );
+        }
     }
 
     private String extractEventType(JsonNode root) {

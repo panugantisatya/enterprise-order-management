@@ -1,5 +1,6 @@
 package com.enterprise.ordermanagement.order.config;
 
+import com.enterprise.ordermanagement.order.exception.InvalidOrderEventException;
 import org.apache.kafka.common.TopicPartition;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -40,9 +41,20 @@ public class KafkaErrorHandlingConfig {
                         MAX_RETRIES
                 );
 
-        return new DefaultErrorHandler(
-                recoverer,
-                backOff
+        DefaultErrorHandler errorHandler =
+                new DefaultErrorHandler(
+                        recoverer,
+                        backOff
+                );
+
+        /*
+         * Invalid/malformed events are permanent failures.
+         * Retrying them cannot make the payload valid.
+         */
+        errorHandler.addNotRetryableExceptions(
+                InvalidOrderEventException.class
         );
+
+        return errorHandler;
     }
 }
