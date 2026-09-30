@@ -1,5 +1,7 @@
 package com.enterprise.ordermanagement.order.exception;
 
+import com.enterprise.ordermanagement.order.payment.exception.InvalidPaymentStatusTransitionException;
+import com.enterprise.ordermanagement.order.payment.exception.PaymentAlreadyExistsException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -95,6 +97,42 @@ public class GlobalExceptionHandler {
                 .body(response);
     }
 
+    @ExceptionHandler(InvalidPaymentStatusTransitionException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidPaymentStatusTransitionException(
+            InvalidPaymentStatusTransitionException exception,
+            HttpServletRequest request
+    ) {
+        ErrorResponse response = new ErrorResponse(
+                "INVALID_PAYMENT_STATUS_TRANSITION",
+                exception.getMessage(),
+                Instant.now(),
+                request.getRequestURI(),
+                List.of()
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .body(response);
+    }
+
+    @ExceptionHandler(PaymentAlreadyExistsException.class)
+    public ResponseEntity<ErrorResponse> handlePaymentAlreadyExistsException(
+            PaymentAlreadyExistsException exception,
+            HttpServletRequest request
+    ) {
+        ErrorResponse response = new ErrorResponse(
+                "PAYMENT_ALREADY_EXISTS",
+                exception.getMessage(),
+                Instant.now(),
+                request.getRequestURI(),
+                List.of()
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .body(response);
+    }
+
     @ExceptionHandler(InvalidOrderStatusTransitionException.class)
     public ResponseEntity<ErrorResponse> handleInvalidOrderStatusTransitionException(
             InvalidOrderStatusTransitionException exception,
@@ -146,6 +184,24 @@ public class GlobalExceptionHandler {
 
         return ResponseEntity
                 .status(HttpStatus.CONFLICT)
+                .body(response);
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ErrorResponse> handleIllegalArgumentException(
+            IllegalArgumentException exception,
+            HttpServletRequest request
+    ) {
+        ErrorResponse response = new ErrorResponse(
+                "INVALID_REQUEST",
+                exception.getMessage(),
+                Instant.now(),
+                request.getRequestURI(),
+                List.of()
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.BAD_REQUEST)
                 .body(response);
     }
 
