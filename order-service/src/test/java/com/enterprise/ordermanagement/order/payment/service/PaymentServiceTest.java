@@ -7,6 +7,7 @@ import com.enterprise.ordermanagement.order.payment.dto.FailPaymentRequest;
 import com.enterprise.ordermanagement.order.payment.entity.Payment;
 import com.enterprise.ordermanagement.order.payment.entity.PaymentIdempotencyRecord;
 import com.enterprise.ordermanagement.order.payment.entity.PaymentStatus;
+import com.enterprise.ordermanagement.order.payment.provider.PaymentProvider;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentIdempotencyRecordRepository;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentRepository;
 import com.enterprise.ordermanagement.order.repository.OrderRepository;
@@ -28,6 +29,7 @@ class PaymentServiceTest {
     private PaymentIdempotencyRecordRepository idempotencyRepository;
     private OrderRepository orderRepository;
     private OutboxEventRepository outboxEventRepository;
+    private PaymentProvider paymentProvider;
 
     private PaymentService paymentService;
 
@@ -38,16 +40,22 @@ class PaymentServiceTest {
     void setUp() {
 
         paymentRepository = mock(PaymentRepository.class);
-        idempotencyRepository = mock(PaymentIdempotencyRecordRepository.class);
+        idempotencyRepository = mock(
+                PaymentIdempotencyRecordRepository.class);
         orderRepository = mock(OrderRepository.class);
         outboxEventRepository = mock(OutboxEventRepository.class);
+        paymentProvider = mock(PaymentProvider.class);
+
+        when(paymentProvider.providerName())
+                .thenReturn("SIMULATED");
 
         paymentService = new PaymentService(
                 paymentRepository,
                 idempotencyRepository,
                 orderRepository,
                 outboxEventRepository,
-                new tools.jackson.databind.json.JsonMapper());
+                new tools.jackson.databind.json.JsonMapper(),
+                paymentProvider);
 
         orderId = UUID.randomUUID();
         customerId = UUID.randomUUID();
@@ -65,6 +73,9 @@ class PaymentServiceTest {
 
         Order order = mock(Order.class);
 
+        when(paymentProvider.supports("SIMULATED"))
+                .thenReturn(true);
+
         when(orderRepository.findById(orderId))
                 .thenReturn(Optional.of(order));
 
@@ -77,30 +88,69 @@ class PaymentServiceTest {
         when(order.getCustomerId())
                 .thenReturn(customerId);
 
-        when(idempotencyRepository.findByIdempotencyKey("payment-test-1"))
+        when(idempotencyRepository.findByIdempotencyKey(
+                "payment-test-1"))
                 .thenReturn(Optional.empty());
 
         when(paymentRepository.findByOrderId(orderId))
                 .thenReturn(Optional.empty());
 
         when(paymentRepository.save(any(Payment.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
+                .thenAnswer(invocation ->
+                        invocation.getArgument(0));
 
-        var response = paymentService.createPayment(
-                "payment-test-1",
-                request);
+        var response =
+                paymentService.createPayment(
+                        "payment-test-1",
+                        request);
 
         assertNotNull(response.paymentId());
         assertEquals(orderId, response.orderId());
         assertEquals(customerId, response.customerId());
-        assertEquals(new BigDecimal("100.00"), response.amount());
+        assertEquals(
+                new BigDecimal("100.00"),
+                response.amount());
         assertEquals("INR", response.currency());
         assertEquals("SIMULATED", response.provider());
-        assertEquals(PaymentStatus.PENDING, response.status());
+        assertEquals(
+                PaymentStatus.PENDING,
+                response.status());
 
-        verify(paymentRepository).save(any(Payment.class));
-        verify(idempotencyRepository).save(any(PaymentIdempotencyRecord.class));
-        verify(outboxEventRepository).save(any(OutboxEvent.class));
+        verify(paymentRepository)
+                .save(any(Payment.class));
+
+        verify(idempotencyRepository)
+                .save(any(PaymentIdempotencyRecord.class));
+
+        verify(outboxEventRepository)
+                .save(any(OutboxEvent.class));
+    }
+
+    @Test
+    void shouldRejectUnsupportedPaymentProvider() {
+
+        CreatePaymentRequest request =
+                new CreatePaymentRequest(
+                        orderId,
+                        new BigDecimal("100.00"),
+                        "INR",
+                        "RAZORPAY");
+
+        when(paymentProvider.supports("RAZORPAY"))
+                .thenReturn(false);
+
+        assertThrows(
+                com.enterprise.ordermanagement.order.payment.exception
+                        .PaymentProviderNotSupportedException.class,
+                () -> paymentService.createPayment(
+                        "payment-provider-test",
+                        request));
+
+        verify(orderRepository, never())
+                .findById(any(UUID.class));
+
+        verify(paymentRepository, never())
+                .save(any(Payment.class));
     }
 
     @Test
@@ -114,7 +164,8 @@ class PaymentServiceTest {
                         "INR",
                         "SIMULATED");
 
-        UUID paymentId = existingPayment.getId();
+        UUID paymentId =
+                existingPayment.getId();
 
         CreatePaymentRequest request =
                 new CreatePaymentRequest(
@@ -129,19 +180,29 @@ class PaymentServiceTest {
                         hash(request),
                         paymentId);
 
-        when(idempotencyRepository.findByIdempotencyKey("payment-test-2"))
+        when(idempotencyRepository.findByIdempotencyKey(
+                "payment-test-2"))
                 .thenReturn(Optional.of(record));
 
         when(paymentRepository.findById(paymentId))
                 .thenReturn(Optional.of(existingPayment));
 
-        var response = paymentService.createPayment(
-                "payment-test-2",
-                request);
+        var response =
+                paymentService.createPayment(
+                        "payment-test-2",
+                        request);
 
-        assertEquals(paymentId, response.paymentId());
-        assertEquals(orderId, response.orderId());
-        assertEquals(PaymentStatus.PENDING, response.status());
+        assertEquals(
+                paymentId,
+                response.paymentId());
+
+        assertEquals(
+                orderId,
+                response.orderId());
+
+        assertEquals(
+                PaymentStatus.PENDING,
+                response.status());
 
         verify(paymentRepository, never())
                 .save(any(Payment.class));
@@ -156,14 +217,16 @@ class PaymentServiceTest {
         PaymentIdempotencyRecord record =
                 new PaymentIdempotencyRecord(
                         "payment-test-3",
-                        hash(new CreatePaymentRequest(
-                                orderId,
-                                new BigDecimal("100.00"),
-                                "INR",
-                                "SIMULATED")),
+                        hash(
+                                new CreatePaymentRequest(
+                                        orderId,
+                                        new BigDecimal("100.00"),
+                                        "INR",
+                                        "SIMULATED")),
                         UUID.randomUUID());
 
-        when(idempotencyRepository.findByIdempotencyKey("payment-test-3"))
+        when(idempotencyRepository.findByIdempotencyKey(
+                "payment-test-3"))
                 .thenReturn(Optional.of(record));
 
         CreatePaymentRequest differentRequest =
@@ -195,6 +258,9 @@ class PaymentServiceTest {
 
         Order order = mock(Order.class);
 
+        when(paymentProvider.supports("SIMULATED"))
+                .thenReturn(true);
+
         when(orderRepository.findById(orderId))
                 .thenReturn(Optional.of(order));
 
@@ -208,14 +274,15 @@ class PaymentServiceTest {
                 .thenReturn(Optional.of(mock(Payment.class)));
 
         assertThrows(
-                com.enterprise.ordermanagement.order.payment.exception.PaymentAlreadyExistsException.class,
+                com.enterprise.ordermanagement.order.payment.exception
+                        .PaymentAlreadyExistsException.class,
                 () -> paymentService.createPayment(
                         "payment-test-4",
                         request));
     }
 
     @Test
-    void shouldProcessPaymentSuccessfully() {
+    void shouldProcessPaymentThroughProvider() {
 
         Payment payment =
                 new Payment(
@@ -225,20 +292,40 @@ class PaymentServiceTest {
                         "INR",
                         "SIMULATED");
 
-        UUID paymentId = payment.getId();
+        UUID paymentId =
+                payment.getId();
 
         when(paymentRepository.findById(paymentId))
                 .thenReturn(Optional.of(payment));
 
-        when(outboxEventRepository.save(any(OutboxEvent.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(paymentProvider.supports("SIMULATED"))
+                .thenReturn(true);
+
+        when(paymentProvider.process(payment))
+                .thenReturn("SIM-provider-123");
+
+        when(outboxEventRepository.save(
+                any(OutboxEvent.class)))
+                .thenAnswer(invocation ->
+                        invocation.getArgument(0));
 
         var response =
                 paymentService.processPayment(paymentId);
 
-        assertEquals(PaymentStatus.SUCCEEDED, response.status());
-        assertNotNull(response.providerPaymentId());
-        assertEquals(orderId, response.orderId());
+        assertEquals(
+                PaymentStatus.SUCCEEDED,
+                response.status());
+
+        assertEquals(
+                "SIM-provider-123",
+                response.providerPaymentId());
+
+        assertEquals(
+                orderId,
+                response.orderId());
+
+        verify(paymentProvider)
+                .process(payment);
 
         verify(outboxEventRepository)
                 .save(any(OutboxEvent.class));
@@ -255,23 +342,30 @@ class PaymentServiceTest {
                         "INR",
                         "SIMULATED");
 
-        UUID paymentId = payment.getId();
+        UUID paymentId =
+                payment.getId();
 
         when(paymentRepository.findById(paymentId))
                 .thenReturn(Optional.of(payment));
 
-        when(outboxEventRepository.save(any(OutboxEvent.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(outboxEventRepository.save(
+                any(OutboxEvent.class)))
+                .thenAnswer(invocation ->
+                        invocation.getArgument(0));
 
         FailPaymentRequest request =
-                new FailPaymentRequest("Insufficient funds");
+                new FailPaymentRequest(
+                        "Insufficient funds");
 
         var response =
                 paymentService.failPayment(
                         paymentId,
                         request);
 
-        assertEquals(PaymentStatus.FAILED, response.status());
+        assertEquals(
+                PaymentStatus.FAILED,
+                response.status());
+
         assertEquals(
                 "Insufficient funds",
                 response.failureReason());
@@ -291,25 +385,34 @@ class PaymentServiceTest {
                         "INR",
                         "SIMULATED");
 
-        UUID paymentId = payment.getId();
+        UUID paymentId =
+                payment.getId();
 
         when(paymentRepository.findById(paymentId))
                 .thenReturn(Optional.of(payment));
 
-        when(outboxEventRepository.save(any(OutboxEvent.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(outboxEventRepository.save(
+                any(OutboxEvent.class)))
+                .thenAnswer(invocation ->
+                        invocation.getArgument(0));
 
         var response =
                 paymentService.cancelPayment(paymentId);
 
-        assertEquals(PaymentStatus.CANCELLED, response.status());
-        assertEquals(orderId, response.orderId());
+        assertEquals(
+                PaymentStatus.CANCELLED,
+                response.status());
+
+        assertEquals(
+                orderId,
+                response.orderId());
 
         verify(outboxEventRepository)
                 .save(any(OutboxEvent.class));
     }
 
-    private String hash(CreatePaymentRequest request) {
+    private String hash(
+            CreatePaymentRequest request) {
 
         String canonical =
                 request.orderId()
@@ -318,19 +421,22 @@ class PaymentServiceTest {
                         + "|"
                         + request.currency().toUpperCase()
                         + "|"
-                        + request.provider();
+                        + request.provider().toUpperCase();
 
         try {
 
             var digest =
-                    java.security.MessageDigest.getInstance("SHA-256");
+                    java.security.MessageDigest.getInstance(
+                            "SHA-256");
 
             byte[] bytes =
                     digest.digest(
                             canonical.getBytes(
                                     java.nio.charset.StandardCharsets.UTF_8));
 
-            return java.util.HexFormat.of().formatHex(bytes);
+            return java.util.HexFormat
+                    .of()
+                    .formatHex(bytes);
 
         } catch (Exception e) {
 

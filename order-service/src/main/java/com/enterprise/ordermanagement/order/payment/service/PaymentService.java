@@ -12,6 +12,8 @@ import com.enterprise.ordermanagement.order.payment.event.PaymentCreatedEvent;
 import com.enterprise.ordermanagement.order.payment.event.PaymentFailedEvent;
 import com.enterprise.ordermanagement.order.payment.event.PaymentSucceededEvent;
 import com.enterprise.ordermanagement.order.payment.exception.PaymentAlreadyExistsException;
+import com.enterprise.ordermanagement.order.payment.exception.PaymentProviderNotSupportedException;
+import com.enterprise.ordermanagement.order.payment.provider.PaymentProvider;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentIdempotencyRecordRepository;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentRepository;
 import com.enterprise.ordermanagement.order.repository.OrderRepository;
@@ -29,26 +31,27 @@ import java.util.UUID;
 @Service
 public class PaymentService {
 
-    private static final String PROVIDER = "SIMULATED";
-
     private final PaymentRepository paymentRepository;
     private final PaymentIdempotencyRecordRepository idempotencyRepository;
     private final OrderRepository orderRepository;
     private final OutboxEventRepository outboxEventRepository;
     private final JsonMapper jsonMapper;
+    private final PaymentProvider paymentProvider;
 
     public PaymentService(
             PaymentRepository paymentRepository,
             PaymentIdempotencyRecordRepository idempotencyRepository,
             OrderRepository orderRepository,
             OutboxEventRepository outboxEventRepository,
-            JsonMapper jsonMapper) {
+            JsonMapper jsonMapper,
+            PaymentProvider paymentProvider) {
 
         this.paymentRepository = paymentRepository;
         this.idempotencyRepository = idempotencyRepository;
         this.orderRepository = orderRepository;
         this.outboxEventRepository = outboxEventRepository;
         this.jsonMapper = jsonMapper;
+        this.paymentProvider = paymentProvider;
     }
 
     @Transactional
@@ -79,6 +82,14 @@ public class PaymentService {
             return PaymentResponse.from(existingPayment);
         }
 
+        if (!paymentProvider.supports(request.provider())) {
+            throw new PaymentProviderNotSupportedException(
+                    "Unsupported payment provider: "
+                            + request.provider()
+                            + ". Supported provider: "
+                            + paymentProvider.providerName());
+        }
+
         Order order = orderRepository.findById(request.orderId())
                 .orElseThrow(() ->
                         new IllegalArgumentException(
@@ -103,12 +114,15 @@ public class PaymentService {
                     "Payment already exists for order: " + request.orderId());
         }
 
+        String providerName =
+                request.provider().toUpperCase();
+
         Payment payment = new Payment(
                 request.orderId(),
                 order.getCustomerId(),
                 request.amount(),
                 request.currency().toUpperCase(),
-                PROVIDER);
+                providerName);
 
         paymentRepository.save(payment);
 
@@ -155,10 +169,16 @@ public class PaymentService {
 
         Payment payment = findPayment(paymentId);
 
+        if (!paymentProvider.supports(payment.getProvider())) {
+            throw new PaymentProviderNotSupportedException(
+                    "No payment provider implementation available for: "
+                            + payment.getProvider());
+        }
+
         payment.startProcessing();
 
         String providerPaymentId =
-                "SIM-" + UUID.randomUUID();
+                paymentProvider.process(payment);
 
         payment.markSucceeded(providerPaymentId);
 
@@ -251,7 +271,8 @@ public class PaymentService {
 
         try {
 
-            String payload = jsonMapper.writeValueAsString(event);
+            String payload =
+                    jsonMapper.writeValueAsString(event);
 
             OutboxEvent outboxEvent = new OutboxEvent(
                     "PAYMENT",
@@ -269,7 +290,8 @@ public class PaymentService {
         }
     }
 
-    private String hashPaymentRequest(CreatePaymentRequest request) {
+    private String hashPaymentRequest(
+            CreatePaymentRequest request) {
 
         String canonical =
                 request.orderId()
@@ -278,7 +300,7 @@ public class PaymentService {
                         + "|"
                         + request.currency().toUpperCase()
                         + "|"
-                        + request.provider();
+                        + request.provider().toUpperCase();
 
         try {
 
@@ -287,7 +309,8 @@ public class PaymentService {
 
             byte[] hash =
                     digest.digest(
-                            canonical.getBytes(StandardCharsets.UTF_8));
+                            canonical.getBytes(
+                                    StandardCharsets.UTF_8));
 
             return HexFormat.of().formatHex(hash);
 
