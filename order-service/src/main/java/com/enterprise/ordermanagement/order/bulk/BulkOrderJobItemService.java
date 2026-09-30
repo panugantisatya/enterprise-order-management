@@ -68,6 +68,11 @@ public class BulkOrderJobItemService {
         return repository.findByJobIdOrderByItemIndex(jobId);
     }
 
+    @Transactional
+    public int requeueFailedItems(UUID jobId) {
+        return repository.requeueFailedItems(jobId);
+    }
+
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public boolean claimItem(
             UUID jobId,

@@ -66,4 +66,21 @@ public interface BulkOrderJobRepository
             @Param("jobId") UUID jobId,
             @Param("errorMessage") String errorMessage
     );
+
+    @Modifying
+    @Query(value = """
+            UPDATE bulk_order_jobs
+            SET processed_items = processed_items - failed_items,
+                failed_items = 0,
+                status = 'PROCESSING',
+                completed_at = NULL,
+                error_message = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = :jobId
+              AND status = 'COMPLETED_WITH_ERRORS'
+              AND failed_items > 0
+            """, nativeQuery = true)
+    int reopenFailedItemsForRetry(
+            @Param("jobId") UUID jobId
+    );
 }

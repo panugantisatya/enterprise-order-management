@@ -45,4 +45,14 @@ public class BulkOrderController {
                 bulkOrderService.getBulkOrderJob(jobId)
         );
     }
+
+    @PostMapping("/{jobId}/retry")
+    public ResponseEntity<BulkOrderJobResponse> retryFailedItems(
+            @PathVariable UUID jobId
+    ) {
+        return ResponseEntity.accepted()
+                .body(
+                        bulkOrderService.retryFailedItems(jobId)
+                );
+    }
 }

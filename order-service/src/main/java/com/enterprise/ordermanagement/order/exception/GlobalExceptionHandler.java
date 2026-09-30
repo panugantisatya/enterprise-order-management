@@ -59,6 +59,24 @@ public class GlobalExceptionHandler {
                 .body(response);
     }
 
+    @ExceptionHandler(BulkOrderRetryNotAllowedException.class)
+    public ResponseEntity<ErrorResponse> handleBulkOrderRetryNotAllowedException(
+            BulkOrderRetryNotAllowedException exception,
+            HttpServletRequest request
+    ) {
+        ErrorResponse response = new ErrorResponse(
+                "BULK_ORDER_RETRY_NOT_ALLOWED",
+                exception.getMessage(),
+                Instant.now(),
+                request.getRequestURI(),
+                List.of()
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .body(response);
+    }
+
     @ExceptionHandler(InvalidOrderStatusTransitionException.class)
     public ResponseEntity<ErrorResponse> handleInvalidOrderStatusTransitionException(
             InvalidOrderStatusTransitionException exception,

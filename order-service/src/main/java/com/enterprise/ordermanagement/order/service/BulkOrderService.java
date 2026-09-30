@@ -1,11 +1,12 @@
 package com.enterprise.ordermanagement.order.service;
 
-import com.enterprise.ordermanagement.order.bulk.BulkOrderJobItemService;
 import com.enterprise.ordermanagement.order.bulk.BulkOrderJobCreatedEvent;
+import com.enterprise.ordermanagement.order.bulk.BulkOrderJobItemService;
 import com.enterprise.ordermanagement.order.dto.BulkCreateOrderRequest;
 import com.enterprise.ordermanagement.order.dto.BulkOrderJobResponse;
 import com.enterprise.ordermanagement.order.entity.BulkOrderJob;
 import com.enterprise.ordermanagement.order.entity.OutboxEvent;
+import com.enterprise.ordermanagement.order.exception.BulkOrderRetryNotAllowedException;
 import com.enterprise.ordermanagement.order.repository.BulkOrderJobRepository;
 import com.enterprise.ordermanagement.order.repository.OutboxEventRepository;
 import org.springframework.stereotype.Service;
@@ -68,6 +69,79 @@ public class BulkOrderService {
                 .orElseThrow(() ->
                         new IllegalArgumentException(
                                 "Bulk order job not found: " + jobId
+                        )
+                );
+    }
+
+    @Transactional
+    public BulkOrderJobResponse retryFailedItems(
+            UUID jobId
+    ) {
+
+        int reopened =
+                bulkOrderJobRepository
+                        .reopenFailedItemsForRetry(jobId);
+
+        if (reopened == 0) {
+            throw new BulkOrderRetryNotAllowedException(
+                    "Bulk order job "
+                            + jobId
+                            + " is not in COMPLETED_WITH_ERRORS "
+                            + "with failed items available for retry"
+            );
+        }
+
+        int requeued =
+                itemService.requeueFailedItems(jobId);
+
+        if (requeued != reopened) {
+            throw new IllegalStateException(
+                    "Bulk order retry state mismatch for job "
+                            + jobId
+                            + ": expected "
+                            + reopened
+                            + " failed items but requeued "
+                            + requeued
+            );
+        }
+
+        BulkOrderJobCreatedEvent event =
+                new BulkOrderJobCreatedEvent(
+                        UUID.randomUUID(),
+                        EVENT_TYPE,
+                        jobId,
+                        Instant.now()
+                );
+
+        String payload;
+
+        try {
+            payload =
+                    jsonMapper.writeValueAsString(event);
+        } catch (Exception ex) {
+            throw new IllegalStateException(
+                    "Unable to serialize bulk order retry event",
+                    ex
+            );
+        }
+
+        OutboxEvent outbox =
+                new OutboxEvent(
+                        AGGREGATE_TYPE,
+                        jobId,
+                        EVENT_TYPE,
+                        payload
+                );
+
+        outboxEventRepository.save(outbox);
+
+        return bulkOrderJobRepository
+                .findById(jobId)
+                .map(BulkOrderJobResponse::from)
+                .orElseThrow(() ->
+                        new IllegalStateException(
+                                "Bulk order job disappeared during retry: "
+                                        + jobId
                         )
                 );
     }
