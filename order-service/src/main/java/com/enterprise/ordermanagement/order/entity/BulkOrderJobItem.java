@@ -60,17 +60,31 @@ public class BulkOrderJobItem {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    @Column(name = "processing_started_at")
+    private Instant processingStartedAt;
+
     @Column(name = "completed_at")
     private Instant completedAt;
 
-    public BulkOrderJobItem(
-            UUID jobId,
-            int itemIndex
-    ) {
+    public BulkOrderJobItem(UUID jobId, int itemIndex) {
         this.id = UUID.randomUUID();
         this.jobId = jobId;
         this.itemIndex = itemIndex;
         this.status = BulkOrderJobItemStatus.PROCESSING;
+        this.processingStartedAt = Instant.now();
+    }
+
+    public boolean isProcessingStale(Instant cutoff) {
+        return status == BulkOrderJobItemStatus.PROCESSING
+                && processingStartedAt != null
+                && processingStartedAt.isBefore(cutoff);
+    }
+
+    public void reclaim() {
+        this.status = BulkOrderJobItemStatus.PROCESSING;
+        this.processingStartedAt = Instant.now();
+        this.errorMessage = null;
+        this.completedAt = null;
     }
 
     public void markSucceeded(UUID orderId) {
@@ -100,6 +114,11 @@ public class BulkOrderJobItem {
 
         if (updatedAt == null) {
             updatedAt = now;
+        }
+
+        if (status == BulkOrderJobItemStatus.PROCESSING
+                && processingStartedAt == null) {
+            processingStartedAt = now;
         }
     }
 

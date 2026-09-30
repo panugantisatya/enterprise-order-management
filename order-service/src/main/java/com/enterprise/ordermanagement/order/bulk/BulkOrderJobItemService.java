@@ -1,16 +1,22 @@
 package com.enterprise.ordermanagement.order.bulk;
 
 import com.enterprise.ordermanagement.order.entity.BulkOrderJobItem;
+import com.enterprise.ordermanagement.order.entity.BulkOrderJobItem.BulkOrderJobItemStatus;
 import com.enterprise.ordermanagement.order.repository.BulkOrderJobItemRepository;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 
 @Service
 public class BulkOrderJobItemService {
+
+    private static final Duration PROCESSING_TIMEOUT =
+            Duration.ofMinutes(5);
 
     private final BulkOrderJobItemRepository repository;
 
@@ -25,32 +31,47 @@ public class BulkOrderJobItemService {
             UUID jobId,
             int itemIndex
     ) {
+        var existing =
+                repository.findByJobIdAndItemIndex(
+                        jobId,
+                        itemIndex
+                );
 
-        if (repository.findByJobIdAndItemIndex(
-                jobId,
-                itemIndex
-        ).isPresent()) {
+        if (existing.isEmpty()) {
+            try {
+                repository.saveAndFlush(
+                        new BulkOrderJobItem(
+                                jobId,
+                                itemIndex
+                        )
+                );
+                return true;
+            } catch (DataIntegrityViolationException ex) {
+                return false;
+            }
+        }
+
+        BulkOrderJobItem item = existing.get();
+
+        if (item.getStatus() ==
+                BulkOrderJobItemStatus.SUCCEEDED) {
             return false;
         }
 
-        try {
-            repository.saveAndFlush(
-                    new BulkOrderJobItem(
-                            jobId,
-                            itemIndex
-                    )
-            );
+        if (item.getStatus() ==
+                BulkOrderJobItemStatus.FAILED) {
+            return false;
+        }
 
+        Instant cutoff =
+                Instant.now().minus(PROCESSING_TIMEOUT);
+
+        if (item.isProcessingStale(cutoff)) {
+            item.reclaim();
             return true;
-
-        } catch (DataIntegrityViolationException ex) {
-            /*
-             * Another consumer/thread won the claim.
-             * The unique (job_id, item_index) constraint
-             * makes this safe across multiple instances.
-             */
-            return false;
         }
+
+        return false;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -59,7 +80,6 @@ public class BulkOrderJobItemService {
             int itemIndex,
             UUID orderId
     ) {
-
         repository.findByJobIdAndItemIndex(
                         jobId,
                         itemIndex
@@ -75,7 +95,6 @@ public class BulkOrderJobItemService {
             int itemIndex,
             String errorMessage
     ) {
-
         repository.findByJobIdAndItemIndex(
                         jobId,
                         itemIndex
