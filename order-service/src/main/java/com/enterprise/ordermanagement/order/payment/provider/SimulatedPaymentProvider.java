@@ -1,6 +1,7 @@
 package com.enterprise.ordermanagement.order.payment.provider;
 
 import com.enterprise.ordermanagement.order.payment.entity.Payment;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.UUID;
@@ -9,6 +10,14 @@ import java.util.UUID;
 public class SimulatedPaymentProvider implements PaymentProvider {
 
     private static final String PROVIDER_NAME = "SIMULATED";
+
+    private final boolean decline;
+
+    public SimulatedPaymentProvider(
+            @Value("${payment.provider.simulated.decline:false}")
+            boolean decline) {
+        this.decline = decline;
+    }
 
     @Override
     public String providerName() {
@@ -22,14 +31,20 @@ public class SimulatedPaymentProvider implements PaymentProvider {
     }
 
     @Override
-    public String process(Payment payment) {
+    public PaymentProviderResult process(Payment payment) {
 
         if (!supports(payment.getProvider())) {
             throw new IllegalArgumentException(
-                    "Unsupported payment provider: "
-                            + payment.getProvider());
+                    "Unsupported payment provider: " + payment.getProvider()
+            );
         }
 
-        return "SIM-" + UUID.randomUUID();
+        if (decline) {
+            return PaymentProviderResult.failure(
+                    "M18 simulated provider decline");
+        }
+
+        return PaymentProviderResult.success(
+                "SIM-" + UUID.randomUUID());
     }
 }

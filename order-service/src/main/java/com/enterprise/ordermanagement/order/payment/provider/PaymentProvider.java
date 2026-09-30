@@ -8,5 +8,5 @@ public interface PaymentProvider {
 
     boolean supports(String provider);
 
-    String process(Payment payment);
+    PaymentProviderResult process(Payment payment);
 }

@@ -14,6 +14,7 @@ import com.enterprise.ordermanagement.order.payment.event.PaymentSucceededEvent;
 import com.enterprise.ordermanagement.order.payment.exception.PaymentAlreadyExistsException;
 import com.enterprise.ordermanagement.order.payment.exception.PaymentProviderNotSupportedException;
 import com.enterprise.ordermanagement.order.payment.provider.PaymentProvider;
+import com.enterprise.ordermanagement.order.payment.provider.PaymentProviderResult;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentIdempotencyRecordRepository;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentRepository;
 import com.enterprise.ordermanagement.order.repository.OrderRepository;
@@ -177,26 +178,51 @@ public class PaymentService {
 
         payment.startProcessing();
 
-        String providerPaymentId =
+        PaymentProviderResult providerResult =
                 paymentProvider.process(payment);
 
-        payment.markSucceeded(providerPaymentId);
+        if (providerResult.successful()) {
 
-        PaymentSucceededEvent event = new PaymentSucceededEvent(
-                UUID.randomUUID(),
-                "PaymentSucceeded",
-                Instant.now(),
-                payment.getId(),
-                payment.getOrderId(),
-                payment.getAmount(),
-                payment.getCurrency(),
-                payment.getProvider(),
-                payment.getProviderPaymentId());
+            payment.markSucceeded(
+                    providerResult.providerPaymentId());
 
-        saveOutboxEvent(
-                payment.getId(),
-                "PaymentSucceeded",
-                event);
+            PaymentSucceededEvent event = new PaymentSucceededEvent(
+                    UUID.randomUUID(),
+                    "PaymentSucceeded",
+                    Instant.now(),
+                    payment.getId(),
+                    payment.getOrderId(),
+                    payment.getAmount(),
+                    payment.getCurrency(),
+                    payment.getProvider(),
+                    payment.getProviderPaymentId());
+
+            saveOutboxEvent(
+                    payment.getId(),
+                    "PaymentSucceeded",
+                    event);
+
+        } else {
+
+            payment.markFailed(
+                    providerResult.failureReason());
+
+            PaymentFailedEvent event = new PaymentFailedEvent(
+                    UUID.randomUUID(),
+                    "PaymentFailed",
+                    Instant.now(),
+                    payment.getId(),
+                    payment.getOrderId(),
+                    payment.getAmount(),
+                    payment.getCurrency(),
+                    payment.getProvider(),
+                    payment.getFailureReason());
+
+            saveOutboxEvent(
+                    payment.getId(),
+                    "PaymentFailed",
+                    event);
+        }
 
         return PaymentResponse.from(payment);
     }

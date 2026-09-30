@@ -8,6 +8,7 @@ import com.enterprise.ordermanagement.order.payment.entity.Payment;
 import com.enterprise.ordermanagement.order.payment.entity.PaymentIdempotencyRecord;
 import com.enterprise.ordermanagement.order.payment.entity.PaymentStatus;
 import com.enterprise.ordermanagement.order.payment.provider.PaymentProvider;
+import com.enterprise.ordermanagement.order.payment.provider.PaymentProviderResult;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentIdempotencyRecordRepository;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentRepository;
 import com.enterprise.ordermanagement.order.repository.OrderRepository;
@@ -302,7 +303,8 @@ class PaymentServiceTest {
                 .thenReturn(true);
 
         when(paymentProvider.process(payment))
-                .thenReturn("SIM-provider-123");
+                .thenReturn(
+                        PaymentProviderResult.success("SIM-provider-123"));
 
         when(outboxEventRepository.save(
                 any(OutboxEvent.class)))

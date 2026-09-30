@@ -10,68 +10,85 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class SimulatedPaymentProviderTest {
 
-    private final SimulatedPaymentProvider provider =
-            new SimulatedPaymentProvider();
-
     @Test
     void shouldSupportSimulatedProvider() {
 
+        SimulatedPaymentProvider provider =
+                new SimulatedPaymentProvider(false);
+
+        assertTrue(provider.supports("SIMULATED"));
+        assertTrue(provider.supports("simulated"));
+        assertFalse(provider.supports("STRIPE"));
+        assertFalse(provider.supports(null));
+    }
+
+    @Test
+    void shouldReturnSuccessfulResult() {
+
+        SimulatedPaymentProvider provider =
+                new SimulatedPaymentProvider(false);
+
+        Payment payment = new Payment(
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                new BigDecimal("200.00"),
+                "INR",
+                "SIMULATED");
+
+        PaymentProviderResult result =
+                provider.process(payment);
+
+        assertNotNull(result);
+        assertTrue(result.successful());
+        assertNotNull(result.providerPaymentId());
+        assertTrue(result.providerPaymentId().startsWith("SIM-"));
+        assertNull(result.failureReason());
+    }
+
+    @Test
+    void shouldReturnFailureResultWhenConfiguredToDecline() {
+
+        SimulatedPaymentProvider provider =
+                new SimulatedPaymentProvider(true);
+
+        Payment payment = new Payment(
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                new BigDecimal("200.00"),
+                "INR",
+                "SIMULATED");
+
+        PaymentProviderResult result =
+                provider.process(payment);
+
+        assertNotNull(result);
+        assertFalse(result.successful());
+        assertNull(result.providerPaymentId());
         assertEquals(
-                "SIMULATED",
-                provider.providerName());
-
-        assertTrue(
-                provider.supports("SIMULATED"));
-
-        assertTrue(
-                provider.supports("simulated"));
+                "M18 simulated provider decline",
+                result.failureReason());
     }
 
     @Test
     void shouldRejectUnsupportedProvider() {
 
-        assertFalse(
-                provider.supports("RAZORPAY"));
+        SimulatedPaymentProvider provider =
+                new SimulatedPaymentProvider(false);
 
-        assertFalse(
-                provider.supports("STRIPE"));
+        Payment payment = new Payment(
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                new BigDecimal("200.00"),
+                "INR",
+                "STRIPE");
 
-        assertFalse(
-                provider.supports(null));
-    }
+        IllegalArgumentException exception =
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () -> provider.process(payment));
 
-    @Test
-    void shouldGenerateSimulatedProviderPaymentId() {
-
-        Payment payment =
-                new Payment(
-                        UUID.randomUUID(),
-                        UUID.randomUUID(),
-                        new BigDecimal("100.00"),
-                        "INR",
-                        "SIMULATED");
-
-        String providerPaymentId =
-                provider.process(payment);
-
-        assertNotNull(providerPaymentId);
-        assertTrue(
-                providerPaymentId.startsWith("SIM-"));
-    }
-
-    @Test
-    void shouldRejectPaymentForUnsupportedProvider() {
-
-        Payment payment =
-                new Payment(
-                        UUID.randomUUID(),
-                        UUID.randomUUID(),
-                        new BigDecimal("100.00"),
-                        "INR",
-                        "RAZORPAY");
-
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> provider.process(payment));
+        assertEquals(
+                "Unsupported payment provider: STRIPE",
+                exception.getMessage());
     }
 }
