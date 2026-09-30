@@ -105,6 +105,21 @@ public class BulkOrderJobItemService {
         if (item.getStatus() ==
                 BulkOrderJobItemStatus.PROCESSING) {
 
+            /*
+             * Initial durable item created by the bulk job.
+             *
+             * The item is PROCESSING by schema design, but a
+             * null processingStartedAt means no worker has
+             * actually claimed it yet.
+             */
+            if (item.getProcessingStartedAt() == null) {
+                item.reclaim();
+                return true;
+            }
+
+            /*
+             * Existing 12F recovery boundary.
+             */
             if (item.isProcessingStale(cutoff)) {
                 item.reclaim();
                 return true;

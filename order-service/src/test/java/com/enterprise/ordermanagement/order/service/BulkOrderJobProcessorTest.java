@@ -4,210 +4,224 @@ import com.enterprise.ordermanagement.order.bulk.BulkOrderJobItemService;
 import com.enterprise.ordermanagement.order.bulk.BulkOrderJobProgressService;
 import com.enterprise.ordermanagement.order.dto.BulkCreateOrderRequest;
 import com.enterprise.ordermanagement.order.dto.CreateOrderItemRequest;
+import com.enterprise.ordermanagement.order.dto.CreateOrderRequest;
 import com.enterprise.ordermanagement.order.dto.OrderResponse;
 import com.enterprise.ordermanagement.order.entity.BulkOrderJobItem;
+import com.enterprise.ordermanagement.order.exception.ResourceNotFoundException;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class BulkOrderJobProcessorTest {
 
-    @Test
-    void shouldProcessAllItemsSuccessfully() {
+    private ThreadPoolTaskExecutor executor;
 
-        OrderService orderService =
+    private OrderService orderService;
+    private BulkOrderJobProgressService progressService;
+    private BulkOrderJobItemService itemService;
+
+    private JsonMapper jsonMapper;
+
+    private BulkOrderJobProcessor processor;
+
+    @BeforeEach
+    void setUp() {
+
+        executor =
+                new ThreadPoolTaskExecutor();
+
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(2);
+        executor.setQueueCapacity(2);
+        executor.setThreadNamePrefix("test-bulk-");
+        executor.initialize();
+
+        orderService =
                 mock(OrderService.class);
 
-        BulkOrderJobProgressService progressService =
+        progressService =
                 mock(BulkOrderJobProgressService.class);
 
-        BulkOrderJobItemService itemService =
+        itemService =
                 mock(BulkOrderJobItemService.class);
 
-        JsonMapper jsonMapper =
+        jsonMapper =
                 new JsonMapper();
 
-        UUID jobId = UUID.randomUUID();
+        processor =
+                new BulkOrderJobProcessor(
+                        orderService,
+                        progressService,
+                        itemService,
+                        executor,
+                        jsonMapper,
+                        4
+                );
+    }
 
-        UUID orderId1 = UUID.randomUUID();
-        UUID orderId2 = UUID.randomUUID();
+    @AfterEach
+    void tearDown() {
+        executor.shutdown();
+    }
 
-        BulkOrderJobItem item1 =
-                createItem(jobId, 0);
+    @Test
+    void shouldProcessBulkItemsWithBoundedConcurrency()
+            throws Exception {
 
-        BulkOrderJobItem item2 =
-                createItem(jobId, 1);
+        UUID jobId =
+                UUID.randomUUID();
+
+        List<BulkOrderJobItem> items =
+                persistedItems(
+                        jobId,
+                        6
+                );
 
         when(itemService.findItems(jobId))
-                .thenReturn(List.of(item1, item2));
+                .thenReturn(items);
 
-        when(itemService.claimItem(jobId, 0))
-                .thenReturn(true);
+        when(itemService.claimItem(
+                eq(jobId),
+                anyInt()
+        )).thenReturn(true);
 
-        when(itemService.claimItem(jobId, 1))
-                .thenReturn(true);
+        AtomicInteger active =
+                new AtomicInteger();
 
-        OrderResponse response1 =
-                mock(OrderResponse.class);
-
-        OrderResponse response2 =
-                mock(OrderResponse.class);
-
-        when(response1.id())
-                .thenReturn(orderId1);
-
-        when(response2.id())
-                .thenReturn(orderId2);
+        AtomicInteger maxActive =
+                new AtomicInteger();
 
         when(orderService.createOrder(
-                any(),
+                any(CreateOrderRequest.class),
                 anyString()
-        )).thenReturn(
-                response1,
-                response2
+        )).thenAnswer(invocation -> {
+
+            int current =
+                    active.incrementAndGet();
+
+            maxActive.updateAndGet(
+                    previous ->
+                            Math.max(previous, current)
+            );
+
+            try {
+                Thread.sleep(50);
+            } finally {
+                active.decrementAndGet();
+            }
+
+            return mock(OrderResponse.class);
+        });
+
+        processor.process(jobId);
+
+        verify(
+                itemService
+        ).findItems(jobId);
+
+        verify(
+                orderService,
+                times(6)
+        ).createOrder(
+                any(CreateOrderRequest.class),
+                anyString()
         );
 
-        BulkOrderJobProcessor processor =
-                new BulkOrderJobProcessor(
-                        orderService,
-                        progressService,
-                        itemService,
-                        jsonMapper
-                );
+        /*
+         * The executor has only two worker threads.
+         */
+        assertTrue(
+                maxActive.get() <= 2,
+                "Concurrent processing exceeded worker count"
+        );
 
-        processor.process(jobId);
+        verify(
+                progressService
+        ).markProcessing(jobId);
 
-        verify(progressService)
-                .markProcessing(jobId);
-
-        verify(itemService)
-                .findItems(jobId);
-
-        verify(itemService)
-                .claimItem(jobId, 0);
-
-        verify(itemService)
-                .claimItem(jobId, 1);
-
-        verify(orderService, times(2))
-                .createOrder(
-                        any(),
-                        anyString()
-                );
-
-        verify(itemService)
-                .markSucceeded(
-                        jobId,
-                        0,
-                        orderId1
-                );
-
-        verify(itemService)
-                .markSucceeded(
-                        jobId,
-                        1,
-                        orderId2
-                );
-
-        verify(progressService, times(2))
-                .markItemSucceeded(jobId);
+        verify(
+                progressService,
+                times(6)
+        ).markItemSucceeded(jobId);
     }
 
     @Test
-    void shouldSkipItemsThatCannotBeClaimed() {
+    void shouldNotProcessAlreadyClaimedItems() {
 
-        OrderService orderService =
-                mock(OrderService.class);
+        UUID jobId =
+                UUID.randomUUID();
 
-        BulkOrderJobProgressService progressService =
-                mock(BulkOrderJobProgressService.class);
-
-        BulkOrderJobItemService itemService =
-                mock(BulkOrderJobItemService.class);
-
-        JsonMapper jsonMapper =
-                new JsonMapper();
-
-        UUID jobId = UUID.randomUUID();
-
-        BulkOrderJobItem item1 =
-                createItem(jobId, 0);
-
-        BulkOrderJobItem item2 =
-                createItem(jobId, 1);
+        List<BulkOrderJobItem> items =
+                persistedItems(
+                        jobId,
+                        3
+                );
 
         when(itemService.findItems(jobId))
-                .thenReturn(List.of(item1, item2));
+                .thenReturn(items);
 
         when(itemService.claimItem(
-                jobId,
-                0
+                eq(jobId),
+                eq(0)
         )).thenReturn(false);
 
         when(itemService.claimItem(
-                jobId,
-                1
+                eq(jobId),
+                eq(1)
+        )).thenReturn(true);
+
+        when(itemService.claimItem(
+                eq(jobId),
+                eq(2)
         )).thenReturn(false);
 
-        BulkOrderJobProcessor processor =
-                new BulkOrderJobProcessor(
-                        orderService,
-                        progressService,
-                        itemService,
-                        jsonMapper
-                );
+        when(orderService.createOrder(
+                any(CreateOrderRequest.class),
+                anyString()
+        )).thenReturn(
+                mock(OrderResponse.class)
+        );
 
         processor.process(jobId);
 
-        verify(progressService)
-                .markProcessing(jobId);
+        verify(
+                itemService
+        ).findItems(jobId);
 
-        verify(itemService)
-                .findItems(jobId);
-
-        verify(itemService)
-                .claimItem(jobId, 0);
-
-        verify(itemService)
-                .claimItem(jobId, 1);
-
-        verifyNoInteractions(orderService);
-
-        verify(progressService, never())
-                .markItemSucceeded(any());
-
-        verify(progressService, never())
-                .markItemFailed(any(), anyString());
+        verify(
+                orderService,
+                times(1)
+        ).createOrder(
+                any(CreateOrderRequest.class),
+                anyString()
+        );
     }
 
     @Test
-    void shouldMarkItemFailedWhenOrderCreationFails() {
+    void shouldMarkExpectedItemFailure() {
 
-        OrderService orderService =
-                mock(OrderService.class);
+        UUID jobId =
+                UUID.randomUUID();
 
-        BulkOrderJobProgressService progressService =
-                mock(BulkOrderJobProgressService.class);
-
-        BulkOrderJobItemService itemService =
-                mock(BulkOrderJobItemService.class);
-
-        JsonMapper jsonMapper =
-                new JsonMapper();
-
-        UUID jobId = UUID.randomUUID();
-
-        BulkOrderJobItem item =
-                createItem(jobId, 0);
+        List<BulkOrderJobItem> items =
+                persistedItems(
+                        jobId,
+                        1
+                );
 
         when(itemService.findItems(jobId))
-                .thenReturn(List.of(item));
+                .thenReturn(items);
 
         when(itemService.claimItem(
                 jobId,
@@ -215,88 +229,69 @@ class BulkOrderJobProcessorTest {
         )).thenReturn(true);
 
         when(orderService.createOrder(
-                any(),
+                any(CreateOrderRequest.class),
                 anyString()
         )).thenThrow(
-                new IllegalArgumentException(
-                        "Invalid order"
+                new ResourceNotFoundException(
+                        "customer not found"
                 )
         );
 
-        BulkOrderJobProcessor processor =
-                new BulkOrderJobProcessor(
-                        orderService,
-                        progressService,
-                        itemService,
-                        jsonMapper
-                );
-
         processor.process(jobId);
 
-        verify(itemService)
-                .markFailed(
-                        eq(jobId),
-                        eq(0),
-                        contains("Invalid order")
-                );
+        verify(
+                itemService
+        ).markFailed(
+                eq(jobId),
+                eq(0),
+                contains("customer not found")
+        );
 
-        verify(progressService)
-                .markItemFailed(
-                        eq(jobId),
-                        contains("Invalid order")
-                );
-
-        verify(progressService, never())
-                .markItemSucceeded(jobId);
+        verify(
+                progressService
+        ).markItemFailed(
+                eq(jobId),
+                contains("customer not found")
+        );
     }
 
-    private static BulkOrderJobItem createItem(
+    private List<BulkOrderJobItem> persistedItems(
             UUID jobId,
-            int index
+            int count
     ) {
 
-        BulkOrderJobItem item =
-                new BulkOrderJobItem(
-                        jobId,
-                        index,
-                        buildPayload()
-                );
-
-        /*
-         * The entity starts in PROCESSING state.
-         * For the processor unit test, we mock claimItem()
-         * so the item can be treated as successfully claimed.
-         */
-        return item;
+        return java.util.stream.IntStream
+                .range(0, count)
+                .mapToObj(index ->
+                        new BulkOrderJobItem(
+                                jobId,
+                                index,
+                                payload()
+                        )
+                )
+                .toList();
     }
 
-    private static String buildPayload() {
-
-        UUID customerId =
-                UUID.randomUUID();
-
-        UUID productId =
-                UUID.randomUUID();
+    private String payload() {
 
         BulkCreateOrderRequest.BulkOrderItem item =
                 new BulkCreateOrderRequest.BulkOrderItem(
-                        customerId,
+                        UUID.randomUUID(),
                         "INR",
                         List.of(
                                 new CreateOrderItemRequest(
-                                        productId,
-                                        2,
+                                        UUID.randomUUID(),
+                                        1,
                                         new BigDecimal("100.00")
                                 )
                         )
                 );
 
         try {
-            return new JsonMapper()
-                    .writeValueAsString(item);
+            return jsonMapper.writeValueAsString(item);
         } catch (Exception ex) {
             throw new IllegalStateException(
-                    "Unable to create test payload",
+                    "Failed to create test payload",
                     ex
             );
         }

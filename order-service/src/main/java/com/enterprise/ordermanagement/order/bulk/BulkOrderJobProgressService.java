@@ -32,13 +32,7 @@ public class BulkOrderJobProgressService {
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void markItemSucceeded(UUID jobId) {
-        BulkOrderJob job = getJob(jobId);
-
-        if (isTerminal(job)) {
-            return;
-        }
-
-        job.markItemSucceeded();
+        bulkOrderJobRepository.incrementSucceededAndCompleteIfFinished(jobId);
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -46,13 +40,10 @@ public class BulkOrderJobProgressService {
             UUID jobId,
             String errorMessage
     ) {
-        BulkOrderJob job = getJob(jobId);
-
-        if (isTerminal(job)) {
-            return;
-        }
-
-        job.markItemFailed(errorMessage);
+        bulkOrderJobRepository.incrementFailedAndCompleteIfFinished(
+                jobId,
+                errorMessage
+        );
     }
 
     private BulkOrderJob getJob(UUID jobId) {

@@ -79,7 +79,7 @@ public class BulkOrderJobItem {
         this.itemIndex = itemIndex;
         this.status = BulkOrderJobItemStatus.PROCESSING;
         this.requestPayload = requestPayload;
-        this.processingStartedAt = Instant.now();
+        this.processingStartedAt = null;
     }
 
     public boolean isProcessingStale(Instant cutoff) {
@@ -124,10 +124,6 @@ public class BulkOrderJobItem {
             updatedAt = now;
         }
 
-        if (status == BulkOrderJobItemStatus.PROCESSING
-                && processingStartedAt == null) {
-            processingStartedAt = now;
-        }
     }
 
     @PreUpdate
