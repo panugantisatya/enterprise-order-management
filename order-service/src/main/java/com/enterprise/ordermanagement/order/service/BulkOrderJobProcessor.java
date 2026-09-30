@@ -1,5 +1,6 @@
 package com.enterprise.ordermanagement.order.service;
 
+import com.enterprise.ordermanagement.order.bulk.BulkOrderJobItemService;
 import com.enterprise.ordermanagement.order.bulk.BulkOrderJobProgressService;
 import com.enterprise.ordermanagement.order.dto.BulkCreateOrderRequest;
 import com.enterprise.ordermanagement.order.dto.CreateOrderRequest;
@@ -15,35 +16,48 @@ public class BulkOrderJobProcessor {
 
     private final OrderService orderService;
     private final BulkOrderJobProgressService progressService;
+    private final BulkOrderJobItemService itemService;
 
     public BulkOrderJobProcessor(
             OrderService orderService,
-            BulkOrderJobProgressService progressService
+            BulkOrderJobProgressService progressService,
+            BulkOrderJobItemService itemService
     ) {
         this.orderService = orderService;
         this.progressService = progressService;
+        this.itemService = itemService;
     }
 
     /*
      * Deliberately NOT transactional.
      *
-     * Each OrderService.createOrder() call owns its own transaction.
-     * This ensures one failed bulk item does not roll back successful
-     * items that were already processed.
+     * Each order owns its own transaction.
+     * Each bulk-item state transition also owns
+     * its own short transaction.
      */
     public void process(
             UUID jobId,
             List<BulkCreateOrderRequest.BulkOrderItem> items
     ) {
+
         progressService.markProcessing(jobId);
 
         for (int index = 0; index < items.size(); index++) {
-            BulkCreateOrderRequest.BulkOrderItem item = items.get(index);
+
+            if (!itemService.claimItem(jobId, index)) {
+                /*
+                 * This item was already claimed/completed by
+                 * an earlier delivery or another consumer.
+                 *
+                 * Never increment job counters again.
+                 */
+                continue;
+            }
 
             processItem(
                     jobId,
                     index,
-                    item
+                    items.get(index)
             );
         }
     }
@@ -53,17 +67,12 @@ public class BulkOrderJobProcessor {
             int index,
             BulkCreateOrderRequest.BulkOrderItem item
     ) {
-        /*
-         * Deterministic idempotency key.
-         *
-         * If Kafka redelivers the same bulk job, the same item gets
-         * the same key and OrderService can safely return the existing
-         * order instead of creating a duplicate.
-         */
+
         String idempotencyKey =
                 "bulk:" + jobId + ":item:" + index;
 
         try {
+
             CreateOrderRequest orderRequest =
                     new CreateOrderRequest(
                             item.customerId(),
@@ -71,17 +80,18 @@ public class BulkOrderJobProcessor {
                             item.items()
                     );
 
-            /*
-             * OrderService owns the database transaction for this item.
-             */
-            orderService.createOrder(
-                    orderRequest,
-                    idempotencyKey
+            var order =
+                    orderService.createOrder(
+                            orderRequest,
+                            idempotencyKey
+                    );
+
+            itemService.markSucceeded(
+                    jobId,
+                    index,
+                    order.id()
             );
 
-            /*
-             * Progress is committed independently.
-             */
             progressService.markItemSucceeded(jobId);
 
         } catch (
@@ -90,13 +100,18 @@ public class BulkOrderJobProcessor {
                 | IllegalArgumentException ex
         ) {
 
-            /*
-             * Business/item failure:
-             * record the failure and continue with the next item.
-             */
+            String error =
+                    buildItemError(index, ex);
+
+            itemService.markFailed(
+                    jobId,
+                    index,
+                    error
+            );
+
             progressService.markItemFailed(
                     jobId,
-                    buildItemError(index, ex)
+                    error
             );
         }
     }
@@ -105,12 +120,13 @@ public class BulkOrderJobProcessor {
             int index,
             Exception exception
     ) {
+
         String message = exception.getMessage();
 
         if (message == null || message.isBlank()) {
             message = exception.getClass().getSimpleName();
         }
 
-        return "Item " + index + " failed: " + message;
+        return "Bulk item " + index + " failed: " + message;
     }
 }
