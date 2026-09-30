@@ -77,6 +77,24 @@ public class GlobalExceptionHandler {
                 .body(response);
     }
 
+    @ExceptionHandler(BulkOrderRetryLimitExceededException.class)
+    public ResponseEntity<ErrorResponse> handleBulkOrderRetryLimitExceededException(
+            BulkOrderRetryLimitExceededException exception,
+            HttpServletRequest request
+    ) {
+        ErrorResponse response = new ErrorResponse(
+                "BULK_ORDER_RETRY_LIMIT_EXCEEDED",
+                exception.getMessage(),
+                Instant.now(),
+                request.getRequestURI(),
+                List.of()
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .body(response);
+    }
+
     @ExceptionHandler(InvalidOrderStatusTransitionException.class)
     public ResponseEntity<ErrorResponse> handleInvalidOrderStatusTransitionException(
             InvalidOrderStatusTransitionException exception,

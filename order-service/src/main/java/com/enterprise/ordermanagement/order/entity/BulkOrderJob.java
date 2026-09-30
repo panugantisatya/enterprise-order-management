@@ -55,6 +55,9 @@ public class BulkOrderJob {
     @Column(name = "failed_items", nullable = false)
     private Integer failedCount;
 
+    @Column(name = "retry_count", nullable = false)
+    private Integer retryCount;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -83,6 +86,7 @@ public class BulkOrderJob {
         this.processedCount = 0;
         this.succeededCount = 0;
         this.failedCount = 0;
+        this.retryCount = 0;
         this.createdAt = now;
         this.updatedAt = now;
         this.startedAt = now;
@@ -208,6 +212,10 @@ public class BulkOrderJob {
 
         if (failedCount == null) {
             failedCount = 0;
+        }
+
+        if (retryCount == null) {
+            retryCount = 0;
         }
     }
 

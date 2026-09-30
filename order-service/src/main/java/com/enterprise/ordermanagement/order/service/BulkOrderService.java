@@ -6,9 +6,11 @@ import com.enterprise.ordermanagement.order.dto.BulkCreateOrderRequest;
 import com.enterprise.ordermanagement.order.dto.BulkOrderJobResponse;
 import com.enterprise.ordermanagement.order.entity.BulkOrderJob;
 import com.enterprise.ordermanagement.order.entity.OutboxEvent;
+import com.enterprise.ordermanagement.order.exception.BulkOrderRetryLimitExceededException;
 import com.enterprise.ordermanagement.order.exception.BulkOrderRetryNotAllowedException;
 import com.enterprise.ordermanagement.order.repository.BulkOrderJobRepository;
 import com.enterprise.ordermanagement.order.repository.OutboxEventRepository;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.json.JsonMapper;
@@ -29,17 +31,26 @@ public class BulkOrderService {
     private final OutboxEventRepository outboxEventRepository;
     private final BulkOrderJobItemService itemService;
     private final JsonMapper jsonMapper;
+    private final int maxRetries;
 
     public BulkOrderService(
             BulkOrderJobRepository bulkOrderJobRepository,
             OutboxEventRepository outboxEventRepository,
             BulkOrderJobItemService itemService,
-            JsonMapper jsonMapper
+            JsonMapper jsonMapper,
+            @Value("${bulk.processing.max-retries:3}") int maxRetries
     ) {
+        if (maxRetries < 1) {
+            throw new IllegalArgumentException(
+                    "bulk.processing.max-retries must be at least 1"
+            );
+        }
+
         this.bulkOrderJobRepository = bulkOrderJobRepository;
         this.outboxEventRepository = outboxEventRepository;
         this.itemService = itemService;
         this.jsonMapper = jsonMapper;
+        this.maxRetries = maxRetries;
     }
 
     @Transactional
@@ -80,9 +91,35 @@ public class BulkOrderService {
 
         int reopened =
                 bulkOrderJobRepository
-                        .reopenFailedItemsForRetry(jobId);
+                        .reopenFailedItemsForRetry(
+                                jobId,
+                                maxRetries
+                        );
 
         if (reopened == 0) {
+            BulkOrderJob job =
+                    bulkOrderJobRepository
+                            .findById(jobId)
+                            .orElseThrow(() ->
+                                    new BulkOrderRetryNotAllowedException(
+                                            "Bulk order job "
+                                                    + jobId
+                                                    + " was not found or is not retryable"
+                                    )
+                            );
+
+            if (job.getStatus()
+                    == BulkOrderJob.BulkOrderJobStatus.COMPLETED_WITH_ERRORS
+                    && job.getRetryCount() >= maxRetries) {
+
+                throw new BulkOrderRetryLimitExceededException(
+                        "Bulk order job "
+                                + jobId
+                                + " has reached the maximum retry limit of "
+                                + maxRetries
+                );
+            }
+
             throw new BulkOrderRetryNotAllowedException(
                     "Bulk order job "
                             + jobId

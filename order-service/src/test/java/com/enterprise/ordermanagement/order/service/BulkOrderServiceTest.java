@@ -4,6 +4,7 @@ import com.enterprise.ordermanagement.order.bulk.BulkOrderJobItemService;
 import com.enterprise.ordermanagement.order.dto.BulkOrderJobResponse;
 import com.enterprise.ordermanagement.order.entity.BulkOrderJob;
 import com.enterprise.ordermanagement.order.entity.OutboxEvent;
+import com.enterprise.ordermanagement.order.exception.BulkOrderRetryLimitExceededException;
 import com.enterprise.ordermanagement.order.exception.BulkOrderRetryNotAllowedException;
 import com.enterprise.ordermanagement.order.repository.BulkOrderJobRepository;
 import com.enterprise.ordermanagement.order.repository.OutboxEventRepository;
@@ -47,12 +48,13 @@ class BulkOrderServiceTest {
                         bulkOrderJobRepository,
                         outboxEventRepository,
                         itemService,
-                        jsonMapper
+                        jsonMapper,
+                        3
                 );
     }
 
     @Test
-    void shouldRetryFailedItemsAndCreateNewOutboxEvent() {
+    void shouldRetryFailedItemsAndIncrementRetryCount() {
 
         UUID jobId =
                 UUID.randomUUID();
@@ -73,9 +75,14 @@ class BulkOrderServiceTest {
                 job.getStatus()
         );
 
+        assertEquals(
+                0,
+                job.getRetryCount()
+        );
+
         when(
                 bulkOrderJobRepository
-                        .reopenFailedItemsForRetry(jobId)
+                        .reopenFailedItemsForRetry(jobId, 3)
         ).thenReturn(1);
 
         when(
@@ -91,9 +98,14 @@ class BulkOrderServiceTest {
 
         assertNotNull(response);
 
+        assertEquals(
+                0,
+                response.retryCount()
+        );
+
         verify(
                 bulkOrderJobRepository
-        ).reopenFailedItemsForRetry(jobId);
+        ).reopenFailedItemsForRetry(jobId, 3);
 
         verify(
                 itemService
@@ -119,8 +131,132 @@ class BulkOrderServiceTest {
 
         when(
                 bulkOrderJobRepository
-                        .reopenFailedItemsForRetry(jobId)
+                        .reopenFailedItemsForRetry(jobId, 3)
         ).thenReturn(0);
+
+        BulkOrderJob job =
+                new BulkOrderJob(
+                        "not-retryable",
+                        2
+                );
+
+        when(
+                bulkOrderJobRepository.findById(jobId)
+        ).thenReturn(Optional.of(job));
+
+        assertThrows(
+                BulkOrderRetryNotAllowedException.class,
+                () ->
+                        service.retryFailedItems(jobId)
+        );
+
+        verify(
+                itemService,
+                never()
+        ).requeueFailedItems(any());
+
+        verify(
+                outboxEventRepository,
+                never()
+        ).save(any(OutboxEvent.class));
+    }
+
+    @Test
+    void shouldRejectRetryWhenRetryLimitIsExceeded() {
+
+        UUID jobId =
+                UUID.randomUUID();
+
+        when(
+                bulkOrderJobRepository
+                        .reopenFailedItemsForRetry(jobId, 3)
+        ).thenReturn(0);
+
+        BulkOrderJob job =
+                new BulkOrderJob(
+                        "retry-limit",
+                        2
+                );
+
+        job.markProcessing();
+        job.markItemFailed("failure-1");
+        job.markItemFailed("failure-2");
+
+        assertEquals(
+                BulkOrderJob.BulkOrderJobStatus.COMPLETED_WITH_ERRORS,
+                job.getStatus()
+        );
+
+        /*
+         * retryCount is database-managed in M15.
+         * This test uses a repository spy to represent the
+         * persisted state after three successful retry attempts.
+         */
+        BulkOrderJob persistedJob =
+                spy(job);
+
+        doReturn(3)
+                .when(persistedJob)
+                .getRetryCount();
+
+        when(
+                bulkOrderJobRepository.findById(jobId)
+        ).thenReturn(Optional.of(persistedJob));
+
+        BulkOrderRetryLimitExceededException exception =
+                assertThrows(
+                        BulkOrderRetryLimitExceededException.class,
+                        () ->
+                                service.retryFailedItems(jobId)
+                );
+
+        assertTrue(
+                exception.getMessage()
+                        .contains("maximum retry limit of 3")
+        );
+
+        verify(
+                itemService,
+                never()
+        ).requeueFailedItems(any());
+
+        verify(
+                outboxEventRepository,
+                never()
+        ).save(any(OutboxEvent.class));
+    }
+
+    @Test
+    void shouldRejectConcurrentRetryAfterAnotherRetryClaimsJob() {
+
+        UUID jobId =
+                UUID.randomUUID();
+
+        when(
+                bulkOrderJobRepository
+                        .reopenFailedItemsForRetry(jobId, 3)
+        ).thenReturn(0);
+
+        BulkOrderJob job =
+                new BulkOrderJob(
+                        "concurrent-retry",
+                        2
+                );
+
+        job.markProcessing();
+        job.markItemSucceeded();
+        job.markItemFailed("temporary");
+
+        /*
+         * The atomic UPDATE returned zero because another request
+         * already changed the job from COMPLETED_WITH_ERRORS to
+         * PROCESSING.
+         */
+        job.markProcessing();
+
+        when(
+                bulkOrderJobRepository.findById(jobId)
+        ).thenReturn(Optional.of(job));
 
         assertThrows(
                 BulkOrderRetryNotAllowedException.class,
@@ -147,7 +283,7 @@ class BulkOrderServiceTest {
 
         when(
                 bulkOrderJobRepository
-                        .reopenFailedItemsForRetry(jobId)
+                        .reopenFailedItemsForRetry(jobId, 3)
         ).thenReturn(2);
 
         when(

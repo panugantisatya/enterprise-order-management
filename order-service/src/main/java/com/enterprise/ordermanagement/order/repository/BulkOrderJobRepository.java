@@ -75,12 +75,15 @@ public interface BulkOrderJobRepository
                 status = 'PROCESSING',
                 completed_at = NULL,
                 error_message = NULL,
+                retry_count = retry_count + 1,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = :jobId
               AND status = 'COMPLETED_WITH_ERRORS'
               AND failed_items > 0
+              AND retry_count < :maxRetries
             """, nativeQuery = true)
     int reopenFailedItemsForRetry(
-            @Param("jobId") UUID jobId
+            @Param("jobId") UUID jobId,
+            @Param("maxRetries") int maxRetries
     );
 }
