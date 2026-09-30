@@ -30,9 +30,12 @@ public class OrderEventConsumer {
             BulkOrderJobProcessor bulkOrderJobProcessor,
             JsonMapper jsonMapper
     ) {
-        this.consumerIdempotencyService = consumerIdempotencyService;
-        this.bulkOrderJobProcessor = bulkOrderJobProcessor;
-        this.jsonMapper = jsonMapper;
+        this.consumerIdempotencyService =
+                consumerIdempotencyService;
+        this.bulkOrderJobProcessor =
+                bulkOrderJobProcessor;
+        this.jsonMapper =
+                jsonMapper;
     }
 
     @KafkaListener(
@@ -45,7 +48,8 @@ public class OrderEventConsumer {
         final JsonNode root;
 
         try {
-            root = jsonMapper.readTree(eventJson);
+            root =
+                    jsonMapper.readTree(eventJson);
         } catch (JacksonException ex) {
             throw new InvalidOrderEventException(
                     "Invalid order event JSON",
@@ -54,32 +58,43 @@ public class OrderEventConsumer {
         }
 
         try {
-            UUID eventId = extractEventId(root);
-            String eventType = extractEventType(root);
 
-            if (eventType == null || eventType.isBlank()) {
+            UUID eventId =
+                    extractEventId(root);
+
+            String eventType =
+                    extractEventType(root);
+
+            if (eventType == null
+                    || eventType.isBlank()) {
+
                 throw new InvalidOrderEventException(
                         "Event missing eventType"
                 );
             }
 
-            if (consumerIdempotencyService.alreadyProcessed(
-                    CONSUMER_GROUP,
-                    eventId
-            )) {
+            if (consumerIdempotencyService
+                    .alreadyProcessed(
+                            CONSUMER_GROUP,
+                            eventId
+                    )) {
                 return;
             }
 
             switch (eventType) {
 
                 case "OrderCreated" ->
-                        processOrderCreated(eventJson, eventId);
+                        processOrderCreated(
+                                eventId
+                        );
 
                 case "BulkOrderJobCreated" ->
-                        processBulkOrderJobCreated(root);
+                        processBulkOrderJobCreated(
+                                root
+                        );
 
                 default -> {
-                    // Unsupported event types are intentionally ignored.
+                    // Unsupported events are intentionally ignored.
                 }
             }
 
@@ -87,11 +102,13 @@ public class OrderEventConsumer {
 
         } catch (InvalidOrderEventException ex) {
             throw ex;
+
         } catch (IllegalArgumentException ex) {
             throw new InvalidOrderEventException(
                     "Invalid order event",
                     ex
             );
+
         } catch (JacksonException ex) {
             throw new InvalidOrderEventException(
                     "Invalid order event payload",
@@ -101,11 +118,11 @@ public class OrderEventConsumer {
     }
 
     private void processOrderCreated(
-            String eventJson,
             UUID eventId
     ) {
         System.out.println(
-                "Received OrderCreated event: " + eventId
+                "Received OrderCreated event: "
+                        + eventId
         );
     }
 
@@ -113,18 +130,28 @@ public class OrderEventConsumer {
             JsonNode root
     ) throws JacksonException {
 
-        JsonNode jobIdNode = root.get("jobId");
-        JsonNode ordersNode = root.get("orders");
+        JsonNode jobIdNode =
+                root.get("jobId");
 
-        if (jobIdNode == null || jobIdNode.isNull()) {
+        if (jobIdNode == null
+                || jobIdNode.isNull()) {
+
             throw new InvalidOrderEventException(
                     "BulkOrderJobCreated event missing jobId"
             );
         }
 
-        if (ordersNode == null || !ordersNode.isArray()) {
+        UUID jobId;
+
+        try {
+            jobId =
+                    UUID.fromString(
+                            jobIdNode.asText()
+                    );
+        } catch (IllegalArgumentException ex) {
             throw new InvalidOrderEventException(
-                    "BulkOrderJobCreated event missing orders"
+                    "BulkOrderJobCreated event contains invalid jobId",
+                    ex
             );
         }
 
@@ -134,27 +161,40 @@ public class OrderEventConsumer {
                         BulkOrderJobCreatedEvent.class
                 );
 
+        if (!jobId.equals(event.jobId())) {
+            throw new InvalidOrderEventException(
+                    "BulkOrderJobCreated event jobId mismatch"
+            );
+        }
+
         bulkOrderJobProcessor.process(
-                event.jobId(),
-                event.orders()
+                event.jobId()
         );
     }
 
-    private UUID extractEventId(JsonNode root) {
+    private UUID extractEventId(
+            JsonNode root
+    ) {
 
-        JsonNode eventIdNode = root.get("eventId");
+        JsonNode eventIdNode =
+                root.get("eventId");
 
-        if (eventIdNode == null || eventIdNode.isNull()) {
+        if (eventIdNode == null
+                || eventIdNode.isNull()) {
+
             throw new InvalidOrderEventException(
                     "Event missing eventId"
             );
         }
 
         try {
+
             return UUID.fromString(
                     eventIdNode.asText()
             );
+
         } catch (IllegalArgumentException ex) {
+
             throw new InvalidOrderEventException(
                     "Event contains invalid eventId",
                     ex
@@ -162,18 +202,24 @@ public class OrderEventConsumer {
         }
     }
 
-    private String extractEventType(JsonNode root) {
+    private String extractEventType(
+            JsonNode root
+    ) {
 
-        JsonNode eventTypeNode = root.get("eventType");
+        JsonNode eventTypeNode =
+                root.get("eventType");
 
-        if (eventTypeNode == null || eventTypeNode.isNull()) {
+        if (eventTypeNode == null
+                || eventTypeNode.isNull()) {
             return null;
         }
 
         return eventTypeNode.asText();
     }
 
-    private void markProcessed(UUID eventId) {
+    private void markProcessed(
+            UUID eventId
+    ) {
 
         consumerIdempotencyService.markProcessed(
                 CONSUMER_GROUP,

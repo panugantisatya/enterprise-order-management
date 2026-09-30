@@ -48,6 +48,9 @@ public class BulkOrderJobItem {
     @Column(nullable = false, length = 30)
     private BulkOrderJobItemStatus status;
 
+    @Column(name = "request_payload", nullable = false, columnDefinition = "TEXT")
+    private String requestPayload;
+
     @Column(name = "order_id")
     private UUID orderId;
 
@@ -66,11 +69,16 @@ public class BulkOrderJobItem {
     @Column(name = "completed_at")
     private Instant completedAt;
 
-    public BulkOrderJobItem(UUID jobId, int itemIndex) {
+    public BulkOrderJobItem(
+            UUID jobId,
+            int itemIndex,
+            String requestPayload
+    ) {
         this.id = UUID.randomUUID();
         this.jobId = jobId;
         this.itemIndex = itemIndex;
         this.status = BulkOrderJobItemStatus.PROCESSING;
+        this.requestPayload = requestPayload;
         this.processingStartedAt = Instant.now();
     }
 

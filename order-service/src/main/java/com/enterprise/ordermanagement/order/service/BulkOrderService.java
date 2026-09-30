@@ -1,5 +1,6 @@
 package com.enterprise.ordermanagement.order.service;
 
+import com.enterprise.ordermanagement.order.bulk.BulkOrderJobItemService;
 import com.enterprise.ordermanagement.order.bulk.BulkOrderJobCreatedEvent;
 import com.enterprise.ordermanagement.order.dto.BulkCreateOrderRequest;
 import com.enterprise.ordermanagement.order.dto.BulkOrderJobResponse;
@@ -17,20 +18,26 @@ import java.util.UUID;
 @Service
 public class BulkOrderService {
 
-    private static final String EVENT_TYPE = "BulkOrderJobCreated";
-    private static final String AGGREGATE_TYPE = "BULK_ORDER_JOB";
+    private static final String EVENT_TYPE =
+            "BulkOrderJobCreated";
+
+    private static final String AGGREGATE_TYPE =
+            "BULK_ORDER_JOB";
 
     private final BulkOrderJobRepository bulkOrderJobRepository;
     private final OutboxEventRepository outboxEventRepository;
+    private final BulkOrderJobItemService itemService;
     private final JsonMapper jsonMapper;
 
     public BulkOrderService(
             BulkOrderJobRepository bulkOrderJobRepository,
             OutboxEventRepository outboxEventRepository,
+            BulkOrderJobItemService itemService,
             JsonMapper jsonMapper
     ) {
         this.bulkOrderJobRepository = bulkOrderJobRepository;
         this.outboxEventRepository = outboxEventRepository;
+        this.itemService = itemService;
         this.jsonMapper = jsonMapper;
     }
 
@@ -39,11 +46,12 @@ public class BulkOrderService {
             String idempotencyKey,
             BulkCreateOrderRequest request
     ) {
+
         return bulkOrderJobRepository
                 .findByIdempotencyKey(idempotencyKey)
                 .map(BulkOrderJobResponse::from)
-                .orElseGet(
-                        () -> createNewBulkJob(
+                .orElseGet(() ->
+                        createNewBulkJob(
                                 idempotencyKey,
                                 request
                         )
@@ -51,23 +59,24 @@ public class BulkOrderService {
     }
 
     @Transactional(readOnly = true)
-    public BulkOrderJobResponse getBulkOrderJob(UUID jobId) {
-
-        BulkOrderJob job =
-                bulkOrderJobRepository.findById(jobId)
-                        .orElseThrow(() ->
-                                new IllegalArgumentException(
-                                        "Bulk order job not found: " + jobId
-                                )
-                        );
-
-        return BulkOrderJobResponse.from(job);
+    public BulkOrderJobResponse getBulkOrderJob(
+            UUID jobId
+    ) {
+        return bulkOrderJobRepository
+                .findById(jobId)
+                .map(BulkOrderJobResponse::from)
+                .orElseThrow(() ->
+                        new IllegalArgumentException(
+                                "Bulk order job not found: " + jobId
+                        )
+                );
     }
 
     private BulkOrderJobResponse createNewBulkJob(
             String idempotencyKey,
             BulkCreateOrderRequest request
     ) {
+
         BulkOrderJob job =
                 new BulkOrderJob(
                         idempotencyKey,
@@ -76,35 +85,40 @@ public class BulkOrderService {
 
         bulkOrderJobRepository.save(job);
 
+        itemService.createItems(
+                job.getId(),
+                request.orders()
+        );
+
         BulkOrderJobCreatedEvent event =
                 new BulkOrderJobCreatedEvent(
                         UUID.randomUUID(),
                         EVENT_TYPE,
                         job.getId(),
-                        Instant.now(),
-                        request.orders()
+                        Instant.now()
                 );
 
+        String payload;
+
         try {
-            String payload =
+            payload =
                     jsonMapper.writeValueAsString(event);
-
-            OutboxEvent outboxEvent =
-                    new OutboxEvent(
-                            AGGREGATE_TYPE,
-                            job.getId(),
-                            EVENT_TYPE,
-                            payload
-                    );
-
-            outboxEventRepository.save(outboxEvent);
-
         } catch (Exception ex) {
             throw new IllegalStateException(
-                    "Failed to create bulk order outbox event",
+                    "Unable to serialize bulk order event",
                     ex
             );
         }
+
+        OutboxEvent outbox =
+                new OutboxEvent(
+                        AGGREGATE_TYPE,
+                        job.getId(),
+                        EVENT_TYPE,
+                        payload
+                );
+
+        outboxEventRepository.save(outbox);
 
         return BulkOrderJobResponse.from(job);
     }

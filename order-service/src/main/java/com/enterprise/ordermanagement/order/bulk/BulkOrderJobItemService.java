@@ -1,15 +1,17 @@
 package com.enterprise.ordermanagement.order.bulk;
 
+import com.enterprise.ordermanagement.order.dto.BulkCreateOrderRequest;
 import com.enterprise.ordermanagement.order.entity.BulkOrderJobItem;
 import com.enterprise.ordermanagement.order.entity.BulkOrderJobItem.BulkOrderJobItemStatus;
 import com.enterprise.ordermanagement.order.repository.BulkOrderJobItemRepository;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 @Service
@@ -19,11 +21,51 @@ public class BulkOrderJobItemService {
             Duration.ofMinutes(5);
 
     private final BulkOrderJobItemRepository repository;
+    private final JsonMapper jsonMapper;
 
     public BulkOrderJobItemService(
-            BulkOrderJobItemRepository repository
+            BulkOrderJobItemRepository repository,
+            JsonMapper jsonMapper
     ) {
         this.repository = repository;
+        this.jsonMapper = jsonMapper;
+    }
+
+    /*
+     * IMPORTANT:
+     * This deliberately participates in the caller transaction.
+     *
+     * BulkOrderJob + BulkOrderJobItems + OutboxEvent must commit
+     * atomically.
+     */
+    @Transactional
+    public void createItems(
+            UUID jobId,
+            List<BulkCreateOrderRequest.BulkOrderItem> orders
+    ) {
+
+        for (int index = 0; index < orders.size(); index++) {
+
+            String payload =
+                    jsonMapper.writeValueAsString(
+                            orders.get(index)
+                    );
+
+            repository.save(
+                    new BulkOrderJobItem(
+                            jobId,
+                            index,
+                            payload
+                    )
+            );
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public List<BulkOrderJobItem> findItems(
+            UUID jobId
+    ) {
+        return repository.findByJobIdOrderByItemIndex(jobId);
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -31,6 +73,7 @@ public class BulkOrderJobItemService {
             UUID jobId,
             int itemIndex
     ) {
+
         var existing =
                 repository.findByJobIdAndItemIndex(
                         jobId,
@@ -38,20 +81,11 @@ public class BulkOrderJobItemService {
                 );
 
         if (existing.isEmpty()) {
-            try {
-                repository.saveAndFlush(
-                        new BulkOrderJobItem(
-                                jobId,
-                                itemIndex
-                        )
-                );
-                return true;
-            } catch (DataIntegrityViolationException ex) {
-                return false;
-            }
+            return false;
         }
 
-        BulkOrderJobItem item = existing.get();
+        BulkOrderJobItem item =
+                existing.get();
 
         if (item.getStatus() ==
                 BulkOrderJobItemStatus.SUCCEEDED) {
@@ -64,11 +98,19 @@ public class BulkOrderJobItemService {
         }
 
         Instant cutoff =
-                Instant.now().minus(PROCESSING_TIMEOUT);
+                Instant.now().minus(
+                        PROCESSING_TIMEOUT
+                );
 
-        if (item.isProcessingStale(cutoff)) {
-            item.reclaim();
-            return true;
+        if (item.getStatus() ==
+                BulkOrderJobItemStatus.PROCESSING) {
+
+            if (item.isProcessingStale(cutoff)) {
+                item.reclaim();
+                return true;
+            }
+
+            return false;
         }
 
         return false;
@@ -80,6 +122,7 @@ public class BulkOrderJobItemService {
             int itemIndex,
             UUID orderId
     ) {
+
         repository.findByJobIdAndItemIndex(
                         jobId,
                         itemIndex
@@ -95,6 +138,7 @@ public class BulkOrderJobItemService {
             int itemIndex,
             String errorMessage
     ) {
+
         repository.findByJobIdAndItemIndex(
                         jobId,
                         itemIndex
