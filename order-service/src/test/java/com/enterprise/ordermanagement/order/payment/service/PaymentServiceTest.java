@@ -11,6 +11,7 @@ import com.enterprise.ordermanagement.order.payment.provider.PaymentProvider;
 import com.enterprise.ordermanagement.order.payment.provider.PaymentProviderResult;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentIdempotencyRecordRepository;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentRepository;
+import com.enterprise.ordermanagement.order.payment.repository.PaymentRetryIdempotencyRecordRepository;
 import com.enterprise.ordermanagement.order.repository.OrderRepository;
 import com.enterprise.ordermanagement.order.repository.OutboxEventRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -28,6 +29,7 @@ class PaymentServiceTest {
 
     private PaymentRepository paymentRepository;
     private PaymentIdempotencyRecordRepository idempotencyRepository;
+    private PaymentRetryIdempotencyRecordRepository retryIdempotencyRepository;
     private OrderRepository orderRepository;
     private OutboxEventRepository outboxEventRepository;
     private PaymentProvider paymentProvider;
@@ -41,10 +43,18 @@ class PaymentServiceTest {
     void setUp() {
 
         paymentRepository = mock(PaymentRepository.class);
+
         idempotencyRepository = mock(
                 PaymentIdempotencyRecordRepository.class);
+
+        retryIdempotencyRepository = mock(
+                PaymentRetryIdempotencyRecordRepository.class);
+
         orderRepository = mock(OrderRepository.class);
-        outboxEventRepository = mock(OutboxEventRepository.class);
+
+        outboxEventRepository = mock(
+                OutboxEventRepository.class);
+
         paymentProvider = mock(PaymentProvider.class);
 
         when(paymentProvider.providerName())
@@ -53,6 +63,7 @@ class PaymentServiceTest {
         paymentService = new PaymentService(
                 paymentRepository,
                 idempotencyRepository,
+                retryIdempotencyRepository,
                 orderRepository,
                 outboxEventRepository,
                 new tools.jackson.databind.json.JsonMapper(),
@@ -106,13 +117,27 @@ class PaymentServiceTest {
                         request);
 
         assertNotNull(response.paymentId());
-        assertEquals(orderId, response.orderId());
-        assertEquals(customerId, response.customerId());
+
+        assertEquals(
+                orderId,
+                response.orderId());
+
+        assertEquals(
+                customerId,
+                response.customerId());
+
         assertEquals(
                 new BigDecimal("100.00"),
                 response.amount());
-        assertEquals("INR", response.currency());
-        assertEquals("SIMULATED", response.provider());
+
+        assertEquals(
+                "INR",
+                response.currency());
+
+        assertEquals(
+                "SIMULATED",
+                response.provider());
+
         assertEquals(
                 PaymentStatus.PENDING,
                 response.status());
@@ -304,7 +329,8 @@ class PaymentServiceTest {
 
         when(paymentProvider.process(payment))
                 .thenReturn(
-                        PaymentProviderResult.success("SIM-provider-123"));
+                        PaymentProviderResult.success(
+                                "SIM-provider-123"));
 
         when(outboxEventRepository.save(
                 any(OutboxEvent.class)))

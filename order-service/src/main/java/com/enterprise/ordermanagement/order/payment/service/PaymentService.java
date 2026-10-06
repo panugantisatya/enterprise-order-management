@@ -1,30 +1,31 @@
 package com.enterprise.ordermanagement.order.payment.service;
 
-import org.springframework.beans.factory.annotation.Value;
-
 import com.enterprise.ordermanagement.order.entity.Order;
 import com.enterprise.ordermanagement.order.entity.OutboxEvent;
+import com.enterprise.ordermanagement.order.exception.InvalidPaymentStatusTransitionException;
+import com.enterprise.ordermanagement.order.exception.PaymentRetryLimitExceededException;
 import com.enterprise.ordermanagement.order.payment.dto.CreatePaymentRequest;
 import com.enterprise.ordermanagement.order.payment.dto.FailPaymentRequest;
 import com.enterprise.ordermanagement.order.payment.dto.PaymentResponse;
 import com.enterprise.ordermanagement.order.payment.entity.Payment;
-import com.enterprise.ordermanagement.order.payment.entity.PaymentStatus;
 import com.enterprise.ordermanagement.order.payment.entity.PaymentIdempotencyRecord;
+import com.enterprise.ordermanagement.order.payment.entity.PaymentRetryIdempotencyRecord;
+import com.enterprise.ordermanagement.order.payment.entity.PaymentStatus;
 import com.enterprise.ordermanagement.order.payment.event.PaymentCancelledEvent;
 import com.enterprise.ordermanagement.order.payment.event.PaymentCreatedEvent;
 import com.enterprise.ordermanagement.order.payment.event.PaymentFailedEvent;
+import com.enterprise.ordermanagement.order.payment.event.PaymentRetriedEvent;
 import com.enterprise.ordermanagement.order.payment.event.PaymentSucceededEvent;
 import com.enterprise.ordermanagement.order.payment.exception.PaymentAlreadyExistsException;
 import com.enterprise.ordermanagement.order.payment.exception.PaymentProviderNotSupportedException;
 import com.enterprise.ordermanagement.order.payment.provider.PaymentProvider;
-import com.enterprise.ordermanagement.order.payment.event.PaymentRetriedEvent;
-import com.enterprise.ordermanagement.order.exception.PaymentRetryLimitExceededException;
-import com.enterprise.ordermanagement.order.exception.InvalidPaymentStatusTransitionException;
 import com.enterprise.ordermanagement.order.payment.provider.PaymentProviderResult;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentIdempotencyRecordRepository;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentRepository;
+import com.enterprise.ordermanagement.order.payment.repository.PaymentRetryIdempotencyRecordRepository;
 import com.enterprise.ordermanagement.order.repository.OrderRepository;
 import com.enterprise.ordermanagement.order.repository.OutboxEventRepository;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.json.JsonMapper;
@@ -40,6 +41,7 @@ public class PaymentService {
 
     private final PaymentRepository paymentRepository;
     private final PaymentIdempotencyRecordRepository idempotencyRepository;
+    private final PaymentRetryIdempotencyRecordRepository retryIdempotencyRepository;
     private final OrderRepository orderRepository;
     private final OutboxEventRepository outboxEventRepository;
     private final JsonMapper jsonMapper;
@@ -51,6 +53,7 @@ public class PaymentService {
     public PaymentService(
             PaymentRepository paymentRepository,
             PaymentIdempotencyRecordRepository idempotencyRepository,
+            PaymentRetryIdempotencyRecordRepository retryIdempotencyRepository,
             OrderRepository orderRepository,
             OutboxEventRepository outboxEventRepository,
             JsonMapper jsonMapper,
@@ -58,6 +61,7 @@ public class PaymentService {
 
         this.paymentRepository = paymentRepository;
         this.idempotencyRepository = idempotencyRepository;
+        this.retryIdempotencyRepository = retryIdempotencyRepository;
         this.orderRepository = orderRepository;
         this.outboxEventRepository = outboxEventRepository;
         this.jsonMapper = jsonMapper;
@@ -175,43 +179,6 @@ public class PaymentService {
     }
 
     @Transactional
-    public PaymentResponse retryPayment(UUID paymentId) {
-
-        Payment payment = findPayment(paymentId);
-
-        if (payment.getStatus() != PaymentStatus.FAILED) {
-            throw new InvalidPaymentStatusTransitionException(
-                    "Payment retry is allowed only for FAILED payments. Current status: "
-                            + payment.getStatus()
-            );
-        }
-
-        if (payment.getRetryCount() >= maxRetries) {
-            throw new PaymentRetryLimitExceededException(
-                    "Payment retry limit exceeded. Maximum retries: "
-                            + maxRetries
-            );
-        }
-
-        payment.retry(maxRetries);
-
-        PaymentRetriedEvent event = new PaymentRetriedEvent(
-                UUID.randomUUID(),
-                "PaymentRetried",
-                Instant.now(),
-                payment.getId(),
-                payment.getOrderId(),
-                payment.getRetryCount());
-
-        saveOutboxEvent(
-                payment.getId(),
-                "PaymentRetried",
-                event);
-
-        return PaymentResponse.from(payment);
-    }
-
-    @Transactional
     public PaymentResponse processPayment(UUID paymentId) {
 
         Payment payment = findPayment(paymentId);
@@ -324,6 +291,103 @@ public class PaymentService {
                 payment.getId(),
                 "PaymentCancelled",
                 event);
+
+        return PaymentResponse.from(payment);
+    }
+
+    @Transactional
+    public PaymentResponse retryPayment(
+            UUID paymentId,
+            String idempotencyKey) {
+
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Idempotency-Key is required for payment retry");
+        }
+
+        /*
+         * First check allows normal idempotent retry requests
+         * to return the original result without changing the payment again.
+         */
+        var existingRecord =
+                retryIdempotencyRepository.findByIdempotencyKey(idempotencyKey);
+
+        if (existingRecord.isPresent()) {
+
+            PaymentRetryIdempotencyRecord record =
+                    existingRecord.get();
+
+            if (!record.getPaymentId().equals(paymentId)) {
+                throw new IllegalArgumentException(
+                        "Idempotency-Key was already used for a different payment");
+            }
+
+            return PaymentResponse.from(findPayment(paymentId));
+        }
+
+        /*
+         * Lock the payment row so concurrent retry requests for
+         * the same payment are serialized.
+         */
+        Payment payment = paymentRepository.findByIdForUpdate(paymentId)
+                .orElseThrow(() ->
+                        new IllegalArgumentException(
+                                "Payment not found: " + paymentId));
+
+        /*
+         * Re-check after acquiring the row lock.
+         *
+         * This is important for concurrent requests using the
+         * same Idempotency-Key. The second transaction waits for
+         * the first one, then sees the idempotency record.
+         */
+        existingRecord =
+                retryIdempotencyRepository.findByIdempotencyKey(idempotencyKey);
+
+        if (existingRecord.isPresent()) {
+
+            PaymentRetryIdempotencyRecord record =
+                    existingRecord.get();
+
+            if (!record.getPaymentId().equals(paymentId)) {
+                throw new IllegalArgumentException(
+                        "Idempotency-Key was already used for a different payment");
+            }
+
+            return PaymentResponse.from(payment);
+        }
+
+        if (payment.getStatus() != PaymentStatus.FAILED) {
+            throw new InvalidPaymentStatusTransitionException(
+                    "Payment retry is allowed only for FAILED payments. Current status: "
+                            + payment.getStatus());
+        }
+
+        if (payment.getRetryCount() >= maxRetries) {
+            throw new PaymentRetryLimitExceededException(
+                    "Payment retry limit exceeded. Maximum retries: "
+                            + maxRetries);
+        }
+
+        payment.retry(maxRetries);
+
+        PaymentRetriedEvent event = new PaymentRetriedEvent(
+                UUID.randomUUID(),
+                "PaymentRetried",
+                Instant.now(),
+                payment.getId(),
+                payment.getOrderId(),
+                payment.getRetryCount());
+
+        saveOutboxEvent(
+                payment.getId(),
+                "PaymentRetried",
+                event);
+
+        retryIdempotencyRepository.save(
+                new PaymentRetryIdempotencyRecord(
+                        idempotencyKey,
+                        payment.getId()));
 
         return PaymentResponse.from(payment);
     }

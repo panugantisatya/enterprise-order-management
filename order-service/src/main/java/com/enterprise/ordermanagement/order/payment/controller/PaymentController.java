@@ -4,8 +4,6 @@ import com.enterprise.ordermanagement.order.payment.dto.CreatePaymentRequest;
 import com.enterprise.ordermanagement.order.payment.dto.FailPaymentRequest;
 import com.enterprise.ordermanagement.order.payment.dto.PaymentResponse;
 import com.enterprise.ordermanagement.order.payment.service.PaymentService;
-import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotBlank;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -23,25 +21,26 @@ public class PaymentController {
 
     @PostMapping
     public ResponseEntity<PaymentResponse> createPayment(
-            @RequestHeader("Idempotency-Key") @NotBlank String idempotencyKey,
-            @Valid @RequestBody CreatePaymentRequest request) {
-
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestBody CreatePaymentRequest request
+    ) {
         return ResponseEntity.accepted()
                 .body(paymentService.createPayment(idempotencyKey, request));
     }
 
     @GetMapping("/{paymentId}")
     public ResponseEntity<PaymentResponse> getPayment(
-            @PathVariable UUID paymentId) {
-
+            @PathVariable UUID paymentId
+    ) {
         return ResponseEntity.ok(
-                paymentService.getPayment(paymentId));
+                paymentService.getPayment(paymentId)
+        );
     }
 
     @PostMapping("/{paymentId}/process")
     public ResponseEntity<PaymentResponse> processPayment(
-            @PathVariable UUID paymentId) {
-
+            @PathVariable UUID paymentId
+    ) {
         return ResponseEntity.accepted()
                 .body(paymentService.processPayment(paymentId));
     }
@@ -49,25 +48,31 @@ public class PaymentController {
     @PostMapping("/{paymentId}/fail")
     public ResponseEntity<PaymentResponse> failPayment(
             @PathVariable UUID paymentId,
-            @Valid @RequestBody FailPaymentRequest request) {
-
+            @RequestBody FailPaymentRequest request
+    ) {
         return ResponseEntity.accepted()
                 .body(paymentService.failPayment(paymentId, request));
     }
 
-    @PostMapping("/{paymentId}/retry")
-    public ResponseEntity<PaymentResponse> retryPayment(
+    @PostMapping("/{paymentId}/cancel")
+    public ResponseEntity<PaymentResponse> cancelPayment(
             @PathVariable UUID paymentId
     ) {
         return ResponseEntity.accepted()
-                .body(paymentService.retryPayment(paymentId));
+                .body(paymentService.cancelPayment(paymentId));
     }
 
-    @PostMapping("/{paymentId}/cancel")
-    public ResponseEntity<PaymentResponse> cancelPayment(
-            @PathVariable UUID paymentId) {
-
+    @PostMapping("/{paymentId}/retry")
+    public ResponseEntity<PaymentResponse> retryPayment(
+            @PathVariable UUID paymentId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey
+    ) {
         return ResponseEntity.accepted()
-                .body(paymentService.cancelPayment(paymentId));
+                .body(
+                        paymentService.retryPayment(
+                                paymentId,
+                                idempotencyKey
+                        )
+                );
     }
 }
