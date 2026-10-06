@@ -25,7 +25,12 @@ public class PaymentController {
             @RequestBody CreatePaymentRequest request
     ) {
         return ResponseEntity.accepted()
-                .body(paymentService.createPayment(idempotencyKey, request));
+                .body(
+                        paymentService.createPayment(
+                                idempotencyKey,
+                                request
+                        )
+                );
     }
 
     @GetMapping("/{paymentId}")
@@ -39,10 +44,16 @@ public class PaymentController {
 
     @PostMapping("/{paymentId}/process")
     public ResponseEntity<PaymentResponse> processPayment(
-            @PathVariable UUID paymentId
+            @PathVariable UUID paymentId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey
     ) {
         return ResponseEntity.accepted()
-                .body(paymentService.processPayment(paymentId));
+                .body(
+                        paymentService.processPayment(
+                                paymentId,
+                                idempotencyKey
+                        )
+                );
     }
 
     @PostMapping("/{paymentId}/fail")
@@ -51,7 +62,12 @@ public class PaymentController {
             @RequestBody FailPaymentRequest request
     ) {
         return ResponseEntity.accepted()
-                .body(paymentService.failPayment(paymentId, request));
+                .body(
+                        paymentService.failPayment(
+                                paymentId,
+                                request
+                        )
+                );
     }
 
     @PostMapping("/{paymentId}/cancel")
@@ -59,7 +75,9 @@ public class PaymentController {
             @PathVariable UUID paymentId
     ) {
         return ResponseEntity.accepted()
-                .body(paymentService.cancelPayment(paymentId));
+                .body(
+                        paymentService.cancelPayment(paymentId)
+                );
     }
 
     @PostMapping("/{paymentId}/retry")

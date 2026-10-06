@@ -2,14 +2,17 @@ package com.enterprise.ordermanagement.order.payment.service;
 
 import com.enterprise.ordermanagement.order.entity.Order;
 import com.enterprise.ordermanagement.order.entity.OutboxEvent;
+import com.enterprise.ordermanagement.order.exception.IdempotencyKeyConflictException;
 import com.enterprise.ordermanagement.order.payment.dto.CreatePaymentRequest;
 import com.enterprise.ordermanagement.order.payment.dto.FailPaymentRequest;
 import com.enterprise.ordermanagement.order.payment.entity.Payment;
 import com.enterprise.ordermanagement.order.payment.entity.PaymentIdempotencyRecord;
+import com.enterprise.ordermanagement.order.payment.entity.PaymentProcessingIdempotencyRecord;
 import com.enterprise.ordermanagement.order.payment.entity.PaymentStatus;
 import com.enterprise.ordermanagement.order.payment.provider.PaymentProvider;
 import com.enterprise.ordermanagement.order.payment.provider.PaymentProviderResult;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentIdempotencyRecordRepository;
+import com.enterprise.ordermanagement.order.payment.repository.PaymentProcessingIdempotencyRecordRepository;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentRepository;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentRetryIdempotencyRecordRepository;
 import com.enterprise.ordermanagement.order.repository.OrderRepository;
@@ -30,6 +33,7 @@ class PaymentServiceTest {
     private PaymentRepository paymentRepository;
     private PaymentIdempotencyRecordRepository idempotencyRepository;
     private PaymentRetryIdempotencyRecordRepository retryIdempotencyRepository;
+    private PaymentProcessingIdempotencyRecordRepository processingIdempotencyRepository;
     private OrderRepository orderRepository;
     private OutboxEventRepository outboxEventRepository;
     private PaymentProvider paymentProvider;
@@ -50,6 +54,9 @@ class PaymentServiceTest {
         retryIdempotencyRepository = mock(
                 PaymentRetryIdempotencyRecordRepository.class);
 
+        processingIdempotencyRepository = mock(
+                PaymentProcessingIdempotencyRecordRepository.class);
+
         orderRepository = mock(OrderRepository.class);
 
         outboxEventRepository = mock(
@@ -64,6 +71,7 @@ class PaymentServiceTest {
                 paymentRepository,
                 idempotencyRepository,
                 retryIdempotencyRepository,
+                processingIdempotencyRepository,
                 orderRepository,
                 outboxEventRepository,
                 new tools.jackson.databind.json.JsonMapper(),
@@ -321,7 +329,11 @@ class PaymentServiceTest {
         UUID paymentId =
                 payment.getId();
 
-        when(paymentRepository.findById(paymentId))
+        when(processingIdempotencyRepository.findByIdempotencyKey(
+                "process-test-1"))
+                .thenReturn(Optional.empty());
+
+        when(paymentRepository.findByIdForUpdate(paymentId))
                 .thenReturn(Optional.of(payment));
 
         when(paymentProvider.supports("SIMULATED"))
@@ -337,8 +349,15 @@ class PaymentServiceTest {
                 .thenAnswer(invocation ->
                         invocation.getArgument(0));
 
+        when(processingIdempotencyRepository.save(
+                any(PaymentProcessingIdempotencyRecord.class)))
+                .thenAnswer(invocation ->
+                        invocation.getArgument(0));
+
         var response =
-                paymentService.processPayment(paymentId);
+                paymentService.processPayment(
+                        paymentId,
+                        "process-test-1");
 
         assertEquals(
                 PaymentStatus.SUCCEEDED,
@@ -352,11 +371,217 @@ class PaymentServiceTest {
                 orderId,
                 response.orderId());
 
+        verify(paymentRepository)
+                .findByIdForUpdate(paymentId);
+
         verify(paymentProvider)
                 .process(payment);
 
         verify(outboxEventRepository)
                 .save(any(OutboxEvent.class));
+
+        verify(processingIdempotencyRepository)
+                .save(any(PaymentProcessingIdempotencyRecord.class));
+    }
+
+    @Test
+    void shouldReturnExistingPaymentForRepeatedProcessingIdempotencyKey() {
+
+        Payment payment =
+                new Payment(
+                        orderId,
+                        customerId,
+                        new BigDecimal("100.00"),
+                        "INR",
+                        "SIMULATED");
+
+        UUID paymentId =
+                payment.getId();
+
+        payment.startProcessing();
+        payment.markSucceeded("SIM-provider-existing");
+
+        PaymentProcessingIdempotencyRecord record =
+                new PaymentProcessingIdempotencyRecord(
+                        "process-test-2",
+                        paymentId);
+
+        when(processingIdempotencyRepository.findByIdempotencyKey(
+                "process-test-2"))
+                .thenReturn(Optional.of(record));
+
+        when(paymentRepository.findById(paymentId))
+                .thenReturn(Optional.of(payment));
+
+        var response =
+                paymentService.processPayment(
+                        paymentId,
+                        "process-test-2");
+
+        assertEquals(
+                paymentId,
+                response.paymentId());
+
+        assertEquals(
+                PaymentStatus.SUCCEEDED,
+                response.status());
+
+        assertEquals(
+                "SIM-provider-existing",
+                response.providerPaymentId());
+
+        verify(paymentRepository)
+                .findById(paymentId);
+
+        verify(paymentRepository, never())
+                .findByIdForUpdate(any(UUID.class));
+
+        verify(paymentProvider, never())
+                .process(any(Payment.class));
+
+        verify(outboxEventRepository, never())
+                .save(any(OutboxEvent.class));
+    }
+
+    @Test
+    void shouldRejectProcessingIdempotencyKeyUsedForDifferentPayment() {
+
+        Payment firstPayment =
+                new Payment(
+                        orderId,
+                        customerId,
+                        new BigDecimal("100.00"),
+                        "INR",
+                        "SIMULATED");
+
+        Payment secondPayment =
+                new Payment(
+                        UUID.randomUUID(),
+                        customerId,
+                        new BigDecimal("200.00"),
+                        "INR",
+                        "SIMULATED");
+
+        PaymentProcessingIdempotencyRecord record =
+                new PaymentProcessingIdempotencyRecord(
+                        "process-test-3",
+                        firstPayment.getId());
+
+        when(processingIdempotencyRepository.findByIdempotencyKey(
+                "process-test-3"))
+                .thenReturn(Optional.of(record));
+
+        assertThrows(
+                IdempotencyKeyConflictException.class,
+                () -> paymentService.processPayment(
+                        secondPayment.getId(),
+                        "process-test-3"));
+
+        verify(paymentRepository, never())
+                .findByIdForUpdate(any(UUID.class));
+
+        verify(paymentProvider, never())
+                .process(any(Payment.class));
+    }
+
+    @Test
+    void shouldRejectProcessingWhenPaymentIsAlreadySucceeded() {
+
+        Payment payment =
+                new Payment(
+                        orderId,
+                        customerId,
+                        new BigDecimal("100.00"),
+                        "INR",
+                        "SIMULATED");
+
+        UUID paymentId =
+                payment.getId();
+
+        payment.startProcessing();
+        payment.markSucceeded("SIM-provider-123");
+
+        when(processingIdempotencyRepository.findByIdempotencyKey(
+                "process-test-4"))
+                .thenReturn(Optional.empty());
+
+        when(paymentRepository.findByIdForUpdate(paymentId))
+                .thenReturn(Optional.of(payment));
+
+        assertThrows(
+                com.enterprise.ordermanagement.order.exception
+                        .InvalidPaymentStatusTransitionException.class,
+                () -> paymentService.processPayment(
+                        paymentId,
+                        "process-test-4"));
+
+        verify(paymentProvider, never())
+                .process(any(Payment.class));
+
+        verify(processingIdempotencyRepository, never())
+                .save(any(PaymentProcessingIdempotencyRecord.class));
+    }
+
+    @Test
+    void shouldFailPaymentThroughProviderAndPersistProcessingIdempotency() {
+
+        Payment payment =
+                new Payment(
+                        orderId,
+                        customerId,
+                        new BigDecimal("100.00"),
+                        "INR",
+                        "SIMULATED");
+
+        UUID paymentId =
+                payment.getId();
+
+        when(processingIdempotencyRepository.findByIdempotencyKey(
+                "process-test-5"))
+                .thenReturn(Optional.empty());
+
+        when(paymentRepository.findByIdForUpdate(paymentId))
+                .thenReturn(Optional.of(payment));
+
+        when(paymentProvider.supports("SIMULATED"))
+                .thenReturn(true);
+
+        when(paymentProvider.process(payment))
+                .thenReturn(
+                        PaymentProviderResult.failure(
+                                "M21 simulated processing failure"));
+
+        when(outboxEventRepository.save(
+                any(OutboxEvent.class)))
+                .thenAnswer(invocation ->
+                        invocation.getArgument(0));
+
+        when(processingIdempotencyRepository.save(
+                any(PaymentProcessingIdempotencyRecord.class)))
+                .thenAnswer(invocation ->
+                        invocation.getArgument(0));
+
+        var response =
+                paymentService.processPayment(
+                        paymentId,
+                        "process-test-5");
+
+        assertEquals(
+                PaymentStatus.FAILED,
+                response.status());
+
+        assertEquals(
+                "M21 simulated processing failure",
+                response.failureReason());
+
+        verify(paymentProvider)
+                .process(payment);
+
+        verify(outboxEventRepository)
+                .save(any(OutboxEvent.class));
+
+        verify(processingIdempotencyRepository)
+                .save(any(PaymentProcessingIdempotencyRecord.class));
     }
 
     @Test

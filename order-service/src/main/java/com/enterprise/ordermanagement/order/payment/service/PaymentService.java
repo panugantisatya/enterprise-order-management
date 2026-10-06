@@ -2,6 +2,7 @@ package com.enterprise.ordermanagement.order.payment.service;
 
 import com.enterprise.ordermanagement.order.entity.Order;
 import com.enterprise.ordermanagement.order.entity.OutboxEvent;
+import com.enterprise.ordermanagement.order.exception.IdempotencyKeyConflictException;
 import com.enterprise.ordermanagement.order.exception.InvalidPaymentStatusTransitionException;
 import com.enterprise.ordermanagement.order.exception.PaymentRetryLimitExceededException;
 import com.enterprise.ordermanagement.order.payment.dto.CreatePaymentRequest;
@@ -9,6 +10,7 @@ import com.enterprise.ordermanagement.order.payment.dto.FailPaymentRequest;
 import com.enterprise.ordermanagement.order.payment.dto.PaymentResponse;
 import com.enterprise.ordermanagement.order.payment.entity.Payment;
 import com.enterprise.ordermanagement.order.payment.entity.PaymentIdempotencyRecord;
+import com.enterprise.ordermanagement.order.payment.entity.PaymentProcessingIdempotencyRecord;
 import com.enterprise.ordermanagement.order.payment.entity.PaymentRetryIdempotencyRecord;
 import com.enterprise.ordermanagement.order.payment.entity.PaymentStatus;
 import com.enterprise.ordermanagement.order.payment.event.PaymentCancelledEvent;
@@ -21,6 +23,7 @@ import com.enterprise.ordermanagement.order.payment.exception.PaymentProviderNot
 import com.enterprise.ordermanagement.order.payment.provider.PaymentProvider;
 import com.enterprise.ordermanagement.order.payment.provider.PaymentProviderResult;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentIdempotencyRecordRepository;
+import com.enterprise.ordermanagement.order.payment.repository.PaymentProcessingIdempotencyRecordRepository;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentRepository;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentRetryIdempotencyRecordRepository;
 import com.enterprise.ordermanagement.order.repository.OrderRepository;
@@ -42,6 +45,7 @@ public class PaymentService {
     private final PaymentRepository paymentRepository;
     private final PaymentIdempotencyRecordRepository idempotencyRepository;
     private final PaymentRetryIdempotencyRecordRepository retryIdempotencyRepository;
+    private final PaymentProcessingIdempotencyRecordRepository processingIdempotencyRepository;
     private final OrderRepository orderRepository;
     private final OutboxEventRepository outboxEventRepository;
     private final JsonMapper jsonMapper;
@@ -54,6 +58,7 @@ public class PaymentService {
             PaymentRepository paymentRepository,
             PaymentIdempotencyRecordRepository idempotencyRepository,
             PaymentRetryIdempotencyRecordRepository retryIdempotencyRepository,
+            PaymentProcessingIdempotencyRecordRepository processingIdempotencyRepository,
             OrderRepository orderRepository,
             OutboxEventRepository outboxEventRepository,
             JsonMapper jsonMapper,
@@ -62,6 +67,8 @@ public class PaymentService {
         this.paymentRepository = paymentRepository;
         this.idempotencyRepository = idempotencyRepository;
         this.retryIdempotencyRepository = retryIdempotencyRepository;
+        this.processingIdempotencyRepository =
+                processingIdempotencyRepository;
         this.orderRepository = orderRepository;
         this.outboxEventRepository = outboxEventRepository;
         this.jsonMapper = jsonMapper;
@@ -80,7 +87,8 @@ public class PaymentService {
 
         if (existingIdempotency.isPresent()) {
 
-            PaymentIdempotencyRecord record = existingIdempotency.get();
+            PaymentIdempotencyRecord record =
+                    existingIdempotency.get();
 
             if (!record.getRequestHash().equals(requestHash)) {
                 throw new IllegalArgumentException(
@@ -179,9 +187,78 @@ public class PaymentService {
     }
 
     @Transactional
-    public PaymentResponse processPayment(UUID paymentId) {
+    public PaymentResponse processPayment(
+            UUID paymentId,
+            String idempotencyKey) {
 
-        Payment payment = findPayment(paymentId);
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Idempotency-Key is required for payment processing");
+        }
+
+        /*
+         * Fast path for an already completed idempotent request.
+         */
+        var existingRecord =
+                processingIdempotencyRepository
+                        .findByIdempotencyKey(idempotencyKey);
+
+        if (existingRecord.isPresent()) {
+
+            PaymentProcessingIdempotencyRecord record =
+                    existingRecord.get();
+
+            if (!record.getPaymentId().equals(paymentId)) {
+                throw new IdempotencyKeyConflictException(
+                        "Idempotency-Key was already used for a different payment");
+            }
+
+            return PaymentResponse.from(
+                    findPayment(paymentId)
+            );
+        }
+
+        /*
+         * Serialize all processing attempts for the same payment.
+         *
+         * The lock remains active for the transaction, including the
+         * provider invocation. This guarantees that a second request
+         * cannot invoke the provider while the first request is still
+         * processing the same payment.
+         */
+        Payment payment = paymentRepository.findByIdForUpdate(paymentId)
+                .orElseThrow(() ->
+                        new IllegalArgumentException(
+                                "Payment not found: " + paymentId));
+
+        /*
+         * Re-check after acquiring the payment lock.
+         *
+         * A concurrent request using the same Idempotency-Key may have
+         * created the record while this transaction was waiting.
+         */
+        existingRecord =
+                processingIdempotencyRepository
+                        .findByIdempotencyKey(idempotencyKey);
+
+        if (existingRecord.isPresent()) {
+
+            PaymentProcessingIdempotencyRecord record =
+                    existingRecord.get();
+
+            if (!record.getPaymentId().equals(paymentId)) {
+                throw new IdempotencyKeyConflictException(
+                        "Idempotency-Key was already used for a different payment");
+            }
+
+            return PaymentResponse.from(payment);
+        }
+
+        if (payment.getStatus() != PaymentStatus.PENDING) {
+            throw new InvalidPaymentStatusTransitionException(
+                    "Payment processing is allowed only for PENDING payments. Current status: "
+                            + payment.getStatus());
+        }
 
         if (!paymentProvider.supports(payment.getProvider())) {
             throw new PaymentProviderNotSupportedException(
@@ -236,6 +313,15 @@ public class PaymentService {
                     "PaymentFailed",
                     event);
         }
+
+        /*
+         * Persist the idempotency record in the same transaction as
+         * the payment state transition and outbox event.
+         */
+        processingIdempotencyRepository.save(
+                new PaymentProcessingIdempotencyRecord(
+                        idempotencyKey,
+                        payment.getId()));
 
         return PaymentResponse.from(payment);
     }
