@@ -55,6 +55,14 @@ public class PaymentController {
                 .body(paymentService.failPayment(paymentId, request));
     }
 
+    @PostMapping("/{paymentId}/retry")
+    public ResponseEntity<PaymentResponse> retryPayment(
+            @PathVariable UUID paymentId
+    ) {
+        return ResponseEntity.accepted()
+                .body(paymentService.retryPayment(paymentId));
+    }
+
     @PostMapping("/{paymentId}/cancel")
     public ResponseEntity<PaymentResponse> cancelPayment(
             @PathVariable UUID paymentId) {

@@ -64,6 +64,9 @@ public class Payment {
     @Column(nullable = false)
     private Long version;
 
+    @Column(name = "retry_count", nullable = false)
+    private Integer retryCount = 0;
+
     public Payment(
             UUID orderId,
             UUID customerId,
@@ -117,6 +120,24 @@ public class Payment {
 
         status = PaymentStatus.CANCELLED;
         completedAt = Instant.now();
+    }
+
+    public void retry(int maxRetries) {
+        if (status != PaymentStatus.FAILED) {
+            throw invalidTransition(PaymentStatus.PENDING);
+        }
+
+        if (retryCount >= maxRetries) {
+            throw new IllegalStateException(
+                    "Payment retry limit exceeded. Maximum retries: " + maxRetries
+            );
+        }
+
+        retryCount++;
+        status = PaymentStatus.PENDING;
+        failureReason = null;
+        providerPaymentId = null;
+        completedAt = null;
     }
 
     private InvalidPaymentStatusTransitionException invalidTransition(

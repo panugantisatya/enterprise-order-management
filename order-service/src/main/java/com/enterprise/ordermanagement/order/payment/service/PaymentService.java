@@ -1,11 +1,14 @@
 package com.enterprise.ordermanagement.order.payment.service;
 
+import org.springframework.beans.factory.annotation.Value;
+
 import com.enterprise.ordermanagement.order.entity.Order;
 import com.enterprise.ordermanagement.order.entity.OutboxEvent;
 import com.enterprise.ordermanagement.order.payment.dto.CreatePaymentRequest;
 import com.enterprise.ordermanagement.order.payment.dto.FailPaymentRequest;
 import com.enterprise.ordermanagement.order.payment.dto.PaymentResponse;
 import com.enterprise.ordermanagement.order.payment.entity.Payment;
+import com.enterprise.ordermanagement.order.payment.entity.PaymentStatus;
 import com.enterprise.ordermanagement.order.payment.entity.PaymentIdempotencyRecord;
 import com.enterprise.ordermanagement.order.payment.event.PaymentCancelledEvent;
 import com.enterprise.ordermanagement.order.payment.event.PaymentCreatedEvent;
@@ -14,6 +17,9 @@ import com.enterprise.ordermanagement.order.payment.event.PaymentSucceededEvent;
 import com.enterprise.ordermanagement.order.payment.exception.PaymentAlreadyExistsException;
 import com.enterprise.ordermanagement.order.payment.exception.PaymentProviderNotSupportedException;
 import com.enterprise.ordermanagement.order.payment.provider.PaymentProvider;
+import com.enterprise.ordermanagement.order.payment.event.PaymentRetriedEvent;
+import com.enterprise.ordermanagement.order.exception.PaymentRetryLimitExceededException;
+import com.enterprise.ordermanagement.order.exception.InvalidPaymentStatusTransitionException;
 import com.enterprise.ordermanagement.order.payment.provider.PaymentProviderResult;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentIdempotencyRecordRepository;
 import com.enterprise.ordermanagement.order.payment.repository.PaymentRepository;
@@ -38,6 +44,9 @@ public class PaymentService {
     private final OutboxEventRepository outboxEventRepository;
     private final JsonMapper jsonMapper;
     private final PaymentProvider paymentProvider;
+
+    @Value("${payment.processing.max-retries:3}")
+    private int maxRetries;
 
     public PaymentService(
             PaymentRepository paymentRepository,
@@ -161,6 +170,43 @@ public class PaymentService {
                 .orElseThrow(() ->
                         new IllegalArgumentException(
                                 "Payment not found: " + paymentId));
+
+        return PaymentResponse.from(payment);
+    }
+
+    @Transactional
+    public PaymentResponse retryPayment(UUID paymentId) {
+
+        Payment payment = findPayment(paymentId);
+
+        if (payment.getStatus() != PaymentStatus.FAILED) {
+            throw new InvalidPaymentStatusTransitionException(
+                    "Payment retry is allowed only for FAILED payments. Current status: "
+                            + payment.getStatus()
+            );
+        }
+
+        if (payment.getRetryCount() >= maxRetries) {
+            throw new PaymentRetryLimitExceededException(
+                    "Payment retry limit exceeded. Maximum retries: "
+                            + maxRetries
+            );
+        }
+
+        payment.retry(maxRetries);
+
+        PaymentRetriedEvent event = new PaymentRetriedEvent(
+                UUID.randomUUID(),
+                "PaymentRetried",
+                Instant.now(),
+                payment.getId(),
+                payment.getOrderId(),
+                payment.getRetryCount());
+
+        saveOutboxEvent(
+                payment.getId(),
+                "PaymentRetried",
+                event);
 
         return PaymentResponse.from(payment);
     }
